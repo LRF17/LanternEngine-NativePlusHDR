@@ -141,7 +141,10 @@ Preset **Off** shows the game's own SDR look in HDR10, as a reference.
 ## Upscalers and frame generation
 
 - **Upscalers**: Lantern's upscalers work in Native+. The scene is upscaled in 16-bit, so its
-  highlights survive the upscale.
+  highlights survive the upscale. This holds at every output resolution and preset: before 0.9.38.4,
+  some (1440p Quality, 1600x900, 3440x1440 Performance, 13 of the launcher's 75) left the
+  image 8-bit, in SDR inside the HDR signal ("DLSS: ... LDR input" in the log), because the
+  game pads its render targets' width to a multiple of 128.
 - **Frame generation**: DLSS (NVIDIA RTX 40/50) and FSR 3.1 (any GPU) work in Native+ and
   interpolate its HDR frames as they are.
 - With **FSR 3.1** frame generation, the HUD of the generated frames is shown at Game Brightness:
@@ -174,8 +177,8 @@ Preset **Off** shows the game's own SDR look in HDR10, as a reference.
 ## Versions and updates
 
 - Versions follow Lantern's: **0.9.38.1** is this fork's first release on Lantern 0.9.38,
-  **0.9.38.2** and **0.9.38.3** the next ones; **0.9.39.1** the first on Lantern 0.9.39 (its betas
-  on Lantern 0.9.39's betas). Betas (`0.9.39.1-beta.1`) come from the
+  **0.9.38.2**, **0.9.38.3** and **0.9.38.4** the next ones; **0.9.39.1** the first on Lantern 0.9.39
+  (its betas on Lantern 0.9.39's betas). Betas (`0.9.39.1-beta.2`) come from the
   `lantern-Native+HDR-beta` branch, releases from `lantern-Native+HDR`.
 - The launcher updates itself from this fork's releases.
 - **Updating from an earlier version**: your settings are kept. Settings that no longer exist
