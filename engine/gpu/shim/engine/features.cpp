@@ -1,4 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
+#include "gx_objects.h"
+#include "gx_draws.h"
+#include "gx_trace.h"
 #include "engine_hooks.h"
 #include "camera.h"
 #include "change_appearance.h"
@@ -18,15 +21,16 @@
 #include "trophy_sync.h"
 #include "widescreen.h"
 #include "../input/input.h"
+#include "../face_shot.h"
 #include "bbport_settings.h"
 #include <array>
 #include <cstdlib>
 #include <cstring>
 #include <filesystem>
 
-extern "C" int runtime_file_translate(const char*, char*, std::size_t);
-extern "C" int runtime_file_mount(const char*, const char*);
-extern "C" void runtime_file_unmount(const char*);
+extern "C" int sys_file_translate(const char*, char*, std::size_t);
+extern "C" int sys_file_mount(const char*, const char*);
+extern "C" void sys_file_unmount(const char*);
 
 namespace BbEngine {
 namespace {
@@ -42,6 +46,14 @@ constexpr std::uint8_t kPacerEntry[] = {0x55, 0x48, 0x89, 0xe5, 0x41, 0x57, 0x41
 constexpr char kDreamLayout[] = "/app0/dvdroot_ps4/map/mapstudio/m21_00_00_00.msb.dcx";
 constexpr char kDreamLayoutFile[] = "dvdroot_ps4/map/mapstudio/m21_00_00_00.msb.dcx";
 
+bool Seamless() {
+    static const bool on = [] {
+        const char* v = std::getenv("BB_NET_BACKEND");
+        return v && std::strcmp(v, "room") == 0;
+    }();
+    return on;
+}
+
 std::int64_t __attribute__((sysv_abi)) OnStep(std::uint64_t, const std::uint64_t* saved) {
     menu_steps_notify(saved);
     return 0;
@@ -51,6 +63,7 @@ std::int64_t __attribute__((sysv_abi)) OnFrame(std::uint64_t, const std::uint64_
     FrameRate::Tick();
     Loading::Tick(saved[5]);
     ChangeAppearance::Tick();
+    BbFaceShot::Tick(ChangeAppearance::PreviewShown() && Seamless());
     Rebirth::Tick();
     Options::Tick();
     BbInput::Tick();
@@ -59,6 +72,7 @@ std::int64_t __attribute__((sysv_abi)) OnFrame(std::uint64_t, const std::uint64_
     Cheats::Tick();
     TrophySync::Tick();
     GameStatus::Tick();
+    OnlineFixes::Tick();
     return 0;
 }
 
@@ -71,7 +85,7 @@ bool DreamLayoutIsTheGames() {
     const char* game = std::getenv("BB_GAME_DIR");
     char resolved[512]{};
     std::error_code error;
-    return game && !runtime_file_translate(kDreamLayout, resolved, sizeof resolved) &&
+    return game && !sys_file_translate(kDreamLayout, resolved, sizeof resolved) &&
            std::filesystem::equivalent(resolved, std::filesystem::path(game) / kDreamLayoutFile, error);
 }
 }
@@ -104,7 +118,7 @@ void Install(std::uint8_t* image, std::size_t size) {
 
     std::error_code error;
     const bool mounted = mirror_asset && std::filesystem::is_regular_file(mirror_asset, error) && !error &&
-                         !runtime_file_mount(kDreamLayout, mirror_asset);
+                         !sys_file_mount(kDreamLayout, mirror_asset);
     const bool input = BbInput::Install(image, size);
     const bool camera = Camera::Install(image, size);
     const bool wide = Widescreen::Install(image, size);
@@ -117,7 +131,7 @@ void Install(std::uint8_t* image, std::size_t size) {
         editor = true;
         host_log("Dream mirror enabled: native appearance editor and ChrMake_BG preview; %s", mirror_asset);
     } else if (mounted) {
-        runtime_file_unmount(kDreamLayout);
+        sys_file_unmount(kDreamLayout);
         host_log("mirror off: the menu heaps are not 1.09's");
     }
     const bool rebirth = menus && Rebirth::Install(image, size);
@@ -128,6 +142,9 @@ void Install(std::uint8_t* image, std::size_t size) {
     const bool frame_rate = FrameRate::Install(image, size);
     const bool slots = JobSlots::Install(image, size);
     const bool status = GameStatus::Install(image, size);
+    GxObjects::Install(image, size);
+    GxTrace::Install(image, size);
+    GxDraws::Install(image, size);
     if (!(editor || input || camera || wide || graphics || menus || rebirth || cheats || online || guard || timing ||
           frame_rate || slots || status)) {
         for (auto& h : hooks) Discard(h);

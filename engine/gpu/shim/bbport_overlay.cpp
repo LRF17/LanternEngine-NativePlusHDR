@@ -4,19 +4,30 @@
 #include <algorithm>
 #include <atomic>
 #include <chrono>
+#include <map>
 #include <cstring>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <mutex>
+#include <cctype>
+#include <cfloat>
 #include <string>
+#include <vector>
 
 #include <SDL3/SDL.h>
+#include "../bbnet/room/room_service.h"
 #include "bbport_menu_i18n.h"
 #include "bbport_settings.h"
 #include "bbport_usage.h"
 #include "engine/cheats.h"
 #include "engine/graphics.h"
+#include "engine/online_fixes.h"
+#include "input/input.h"
+#include "voice.h"
+#include "hud_gauge.h"
+#include "face_shot.h"
+#include "imgui_internal.h"
 #include "imgui.h"
 #include "imgui_impl_vulkan.h"
 #include "video_core/renderer_vulkan/vk_instance.h"
@@ -69,6 +80,29 @@ extern "C" const unsigned char bb_font_cjk[];
 extern "C" const unsigned char bb_font_cjk_end[];
 #endif
 
+#ifdef _WIN32
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wpedantic"
+alignas(16) static const unsigned char bb_font_name[] = {
+#embed BB_NAME_FONT_PATH
+};
+#pragma GCC diagnostic pop
+static const unsigned char* const bb_font_name_end = bb_font_name + sizeof(bb_font_name);
+#else
+asm(".section .rodata\n"
+    ".balign 16\n"
+    ".hidden bb_font_name\n"
+    ".global bb_font_name\n"
+    "bb_font_name:\n"
+    ".incbin \"" BB_NAME_FONT_PATH "\"\n"
+    ".hidden bb_font_name_end\n"
+    ".global bb_font_name_end\n"
+    "bb_font_name_end:\n"
+    ".previous\n");
+extern "C" const unsigned char bb_font_name[];
+extern "C" const unsigned char bb_font_name_end[];
+#endif
+
 extern "C" void runtime_restart(void);
 
 namespace Vulkan {
@@ -84,8 +118,14 @@ std::mutex imgui_mutex;
 bool initialized = false;
 std::atomic<bool> menu_open{false};
 bool l3_down = false, r3_down = false;
+std::atomic<bool> coop_open{false};
+std::atomic<bool> binding_talk_key{false};
+int coop_row = 0, coop_column = 0;
+std::string coop_armed;
+std::chrono::steady_clock::time_point coop_armed_at{};
 bool dirty = false;
 float base_scale = 1.0f;
+ImFont* name_font = nullptr;
 
 std::mutex prompt_mutex;
 std::atomic<bool> prompt_active{false};
@@ -642,7 +682,8 @@ void UpscalerSection() {
     if (const char* label = Item("Upscaler", "Апскейлер")) {
         const char* upscalers[] = {
             BbSettings::MenuText("Off", "Выкл"), "FSR 3.1", "FSR 4 (INT8)", "FSR 4.1.1 (INT8)",
-            BbSettings::MenuText("TAA (native anti-aliasing)", "TAA (нативное сглаживание)"), "DLSS (NVIDIA)"};
+            BbSettings::MenuText("TAA (native anti-aliasing)", "TAA (нативное сглаживание)"), "DLSS (NVIDIA)",
+            "FSR (AMD FSR SDK)"};
         static const char* later[] = {"XeSS"};
         const int upscaler = s.upscaler;
         if (ImGui::BeginCombo(label, upscalers[upscaler])) {
@@ -650,6 +691,7 @@ void UpscalerSection() {
                 const bool supported = i == BbSettings::UpscalerFsr4     ? s.fsr4_supported.load()
                                        : i == BbSettings::UpscalerFsr411 ? s.fsr411_supported.load()
                                        : i == BbSettings::UpscalerDlss   ? s.dlss_supported.load()
+                                       : i == BbSettings::UpscalerFsr    ? s.fsr_sdk_supported.load()
                                                                          : true;
                 ImGui::BeginDisabled(!supported);
                 if (ImGui::Selectable(upscalers[i], i == upscaler)) {
@@ -671,7 +713,15 @@ void UpscalerSection() {
             }
             ImGui::EndCombo();
         }
-        if (s.upscaler == BbSettings::UpscalerFsr411) {
+        if (s.upscaler == BbSettings::UpscalerFsr) {
+            Hint(BbSettings::MenuText(
+                "AMD's own FSR from the FSR SDK 2.4: FSR 4.1.2 on Radeon RX 6000 and newer and on "
+                "Ryzen APUs that AMD supports (FP8 on RX 9000, INT8 on RX 6000/7000, a lighter INT8 "
+                "model on some APUs), FSR 3.1.6 on other GPUs. The SDK picks the model by itself.",
+                "Собственный FSR от AMD из FSR SDK 2.4: FSR 4.1.2 на Radeon RX 6000 и новее и на "
+                "поддерживаемых AMD процессорах Ryzen (FP8 на RX 9000, INT8 на RX 6000/7000, облегчённая "
+                "модель INT8 на некоторых APU), FSR 3.1.6 на остальных видеокартах. Модель SDK выбирает сам."));
+        } else if (s.upscaler == BbSettings::UpscalerFsr411) {
             Hint(BbSettings::MenuText(
                 "FSR 4.1.1 in INT8 mode: the model from AMD's 4.1.1 DLL, reproduced in Vulkan "
                 "(output matches the DLL). One model for Native through Performance and another "
@@ -1529,7 +1579,110 @@ void MouseSection() {
     }
 }
 
-enum Tab : int { TabUpscaling, TabDisplay, TabPicture, TabGameplay, TabInterface, TabCount };
+void VoiceSection() {
+    auto& s = BbSettings::Get();
+    Section("Voice chat", "Голосовой чат");
+    if (const char* label = Item("Voice chat", "Голосовой чат")) {
+        Checkbox(label, s.voice_enabled);
+        Hint(BbSettings::MenuText("Talk with the hunters in your seamless room. It goes through the room's encryption; nobody sees your address.",
+                                  "Разговор с охотниками в вашей комнате. Идёт через шифрование комнаты; ваш адрес никто не видит."));
+    }
+    if (!s.voice_enabled) return;
+    if (const char* label = Item("Mute my microphone", "Выключить мой микрофон")) Checkbox(label, s.voice_mic_muted);
+    if (const char* label = Item("Push to talk", "Говорить по кнопке")) {
+        Checkbox(label, s.voice_push_to_talk);
+        Hint(BbSettings::MenuText("Off: your microphone sends whenever you speak.", "Выкл.: микрофон передаёт, когда вы говорите."));
+    }
+    if (const char* label = Item("Talk key", "Кнопка разговора")) {
+        const std::string current = binding_talk_key ? std::string(BbSettings::MenuText("Press a key or mouse button...", "Нажмите кнопку..."))
+                                                     : BbVoice::KeyName(s.voice_talk_key);
+        if (ImGui::Button((current + "###talk_key").c_str())) binding_talk_key = true;
+        ImGui::SameLine();
+        ImGui::TextUnformatted(label);
+        Hint(BbSettings::MenuText("Press it, then the key or mouse button you want to hold while talking. Esc keeps the old one.",
+                                  "Нажмите, затем кнопку, которую будете держать во время разговора. Esc оставляет прежнюю."));
+    }
+    if (const char* label = Item("Voice volume", "Громкость голоса")) {
+        float percent = s.voice_volume * 100.0f;
+        if (ImGui::SliderFloat(label, &percent, 0.0f, 500.0f, "%.0f%%")) {
+            s.voice_volume = percent / 100.0f;
+            dirty = true;
+        }
+        Hint(BbSettings::MenuText("How loud the other hunters are, up to 500%.", "Громкость других охотников, до 500%."));
+    }
+    for (const auto& t : BbVoice::Talkers()) {
+        ImGui::PushID(t.slot + 1000);
+        bool muted = t.muted;
+        const std::string label = std::string(BbSettings::MenuText("Mute ", "Заглушить ")) + t.name + (t.talking ? "  (speaking)" : "");
+        if (ImGui::Checkbox(label.c_str(), &muted)) BbVoice::SetMuted(t.name, muted);
+        ImGui::PopID();
+    }
+}
+
+void CoopSection() {
+    namespace Online = BbEngine::OnlineFixes;
+    Section("Seamless co-op", "Бесшовная совместная игра");
+    if (!Item("Seamless co-op", "Бесшовная совместная игра")) return;
+    if (!BbRoom::Active()) {
+        ImGui::TextWrapped("%s", BbSettings::MenuText("Seamless co-op is off. Turn on Play online and Seamless co-op on the launcher's Online page.",
+                                                      "Бесшовная совместная игра выключена. Включите её на странице «Онлайн» в лаунчере."));
+        return;
+    }
+    ImGui::TextWrapped("%s", BbSettings::MenuText("In the game: F2, or hold L3 and press D-pad Up, opens the co-op menu.",
+                                                  "В игре: F2 или L3 + крестовина вверх открывают меню совместной игры."));
+    const bool host = BbRoom::IsHost();
+    const int role = Online::PartyRole();
+    const bool summoning = Online::Summoning();
+    if (host) {
+        if (ImGui::Button(summoning ? BbSettings::MenuText("Stop summoning", "Остановить призыв")
+                                    : BbSettings::MenuText("Start summon", "Начать призыв"))) {
+            if (summoning) Online::StopSummon();
+            else Online::StartSummon();
+        }
+        Hint(BbSettings::MenuText("Summons your friends' signs until the party is full. No bell needed; friends press Send sign.",
+                                  "Призывает знаки друзей, пока отряд не заполнится. Колокол не нужен; друзья нажимают «Отправить знак»."));
+        const auto members = BbRoom::PartyMembers();
+        if (members.empty()) {
+            ImGui::TextDisabled("%s", BbSettings::MenuText("Nobody in your world yet.", "В вашем мире пока никого."));
+        } else {
+            for (const auto& [slot, name] : members) {
+                ImGui::PushID(slot);
+                ImGui::TextUnformatted(name.c_str());
+                ImGui::SameLine();
+                if (ImGui::SmallButton(BbSettings::MenuText("Bring", "Призвать к себе"))) BbRoom::SendBring(slot);
+                ImGui::SameLine();
+                if (ImGui::SmallButton(BbSettings::MenuText("Kick", "Выгнать"))) BbRoom::Kick(slot);
+                ImGui::PopID();
+            }
+            if (ImGui::Button(BbSettings::MenuText("Bring all players", "Призвать всех к себе"))) BbRoom::SendBring(0);
+            Hint(BbSettings::MenuText("Moves hunters in your area to your side. Someone in another area comes with your lamp instead.",
+                                      "Переносит охотников из вашей области к вам. Из другой области — через ваш фонарь."));
+            if (ImGui::Button(BbSettings::MenuText("End session", "Завершить сеанс"))) {
+                Online::StopSummon();
+                for (const auto& [slot, name] : members) BbRoom::Kick(slot);
+            }
+            Hint(BbSettings::MenuText("Sends everyone back to their own world. Your room stays open.",
+                                      "Отправляет всех в их миры. Комната остаётся открытой."));
+        }
+        return;
+    }
+    if (role == 6) {
+        ImGui::TextUnformatted(BbSettings::MenuText("You are in the host's world.", "Вы в мире хозяина."));
+        if (ImGui::Button(BbSettings::MenuText("Go to the host", "К хозяину"))) Online::GoToHost();
+        ImGui::SameLine();
+        if (ImGui::Button(BbSettings::MenuText("Return to your own world", "Вернуться в свой мир"))) BbRoom::LeaveParty();
+        return;
+    }
+    if (ImGui::Button(summoning ? BbSettings::MenuText("Take back the sign", "Убрать знак")
+                                : BbSettings::MenuText("Send sign", "Отправить знак"))) {
+        if (summoning) Online::StopSummon();
+        else Online::StartSummon();
+    }
+    Hint(BbSettings::MenuText("Puts your sign in the host's world until the host summons you. No bell needed.",
+                              "Ставит ваш знак в мире хозяина, пока он вас не призовёт. Колокол не нужен."));
+}
+
+enum Tab : int { TabUpscaling, TabDisplay, TabPicture, TabGameplay, TabInterface, TabCoop, TabCount };
 
 const char* TabTitle(int tab) {
     switch (tab) {
@@ -1537,6 +1690,7 @@ const char* TabTitle(int tab) {
     case TabDisplay: return BbSettings::MenuText("Display", "Экран");
     case TabPicture: return BbSettings::MenuText("Picture", "Изображение");
     case TabGameplay: return BbSettings::MenuText("Gameplay", "Игра");
+    case TabCoop: return BbSettings::MenuText("Co-op", "Совместная игра");
     default: return BbSettings::MenuText("Interface", "Интерфейс");
     }
 }
@@ -1563,6 +1717,10 @@ void DrawTab(int tab) {
     case TabGameplay:
         CameraSection();
         CheatsSection();
+        break;
+    case TabCoop:
+        CoopSection();
+        VoiceSection();
         break;
     default:
         FpsSection();
@@ -1804,6 +1962,87 @@ void CompileNote() {
     ImGui::End();
 }
 
+bool RelayNoteActive() {
+    const std::int64_t ms = BbRoom::ConnectedForMs();
+    return ms >= 0 && ms < 8000 && BbRoom::SponsoredRelay();
+}
+
+void RelayNote() {
+    const ImGuiViewport* viewport = ImGui::GetMainViewport();
+    const float pad = 24.0f * base_scale;
+    ImGui::SetNextWindowPos(ImVec2(viewport->WorkPos.x + viewport->WorkSize.x * 0.5f, viewport->WorkPos.y + pad),
+                            ImGuiCond_Always, ImVec2(0.5f, 0.0f));
+    ImGui::SetNextWindowBgAlpha(0.55f);
+    ImGui::Begin("##relay_note", nullptr,
+                 ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_AlwaysAutoResize |
+                     ImGuiWindowFlags_NoInputs | ImGuiWindowFlags_NoNav |
+                     ImGuiWindowFlags_NoFocusOnAppearing);
+    ImGui::TextUnformatted(BbSettings::MenuText("Connected to the Lantern co-op relay (Frankfurt), hosted by 1337 Hosting",
+                                                "Подключено к серверу совместной игры Lantern (Франкфурт), хостинг 1337 Hosting"));
+    ImGui::End();
+}
+
+bool SummonNoteActive() {
+    std::string text;
+    return BbRoom::CurrentNotice(text);
+}
+
+void SummonNote() {
+    std::string text;
+    if (!BbRoom::CurrentNotice(text)) return;
+    const ImGuiViewport* viewport = ImGui::GetMainViewport();
+    const float k = base_scale;
+    ImDrawList* draw = ImGui::GetForegroundDrawList();
+    ImFont* font = name_font ? name_font : ImGui::GetFont();
+    const float px = ImGui::GetFontSize() * 1.35f;
+    const ImVec2 size = font->CalcTextSizeA(px, FLT_MAX, 0.0f, text.c_str());
+    const float cx = viewport->WorkPos.x + viewport->WorkSize.x * 0.5f;
+    const float y = viewport->WorkPos.y + viewport->WorkSize.y * 0.72f;
+    const float half = std::max(size.x * 0.5f + 80.0f * k, 360.0f * k);
+    const ImVec2 a(cx - half, y), b(cx + half, y + size.y + 24.0f * k);
+    draw->AddRectFilledMultiColor(a, ImVec2(cx, b.y), IM_COL32(0, 0, 0, 0), IM_COL32(0, 0, 0, 190), IM_COL32(0, 0, 0, 190),
+                                  IM_COL32(0, 0, 0, 0));
+    draw->AddRectFilledMultiColor(ImVec2(cx, a.y), b, IM_COL32(0, 0, 0, 190), IM_COL32(0, 0, 0, 0), IM_COL32(0, 0, 0, 0),
+                                  IM_COL32(0, 0, 0, 190));
+    draw->AddLine(a, ImVec2(b.x, a.y), IM_COL32(200, 190, 170, 140), 1.0f * k);
+    draw->AddLine(ImVec2(a.x, b.y), b, IM_COL32(200, 190, 170, 140), 1.0f * k);
+    draw->AddText(font, px, ImVec2(cx - size.x * 0.5f, y + 12.0f * k), IM_COL32(226, 216, 192, 255), text.c_str());
+}
+
+bool AnnouncementActive() {
+    std::string text;
+    float alpha = 0.0f;
+    return BbRoom::CurrentAnnouncement(text, alpha);
+}
+
+void Announcement() {
+    std::string text;
+    float alpha = 0.0f;
+    if (!BbRoom::CurrentAnnouncement(text, alpha)) return;
+    const ImGuiViewport* viewport = ImGui::GetMainViewport();
+    const float k = base_scale;
+    ImDrawList* draw = ImGui::GetForegroundDrawList();
+    ImFont* font = name_font ? name_font : ImGui::GetFont();
+    const char* title = BbSettings::MenuText("Server announcement", "Объявление сервера");
+    const float px = ImGui::GetFontSize() * 1.35f;
+    const float title_px = ImGui::GetFontSize() * 0.95f;
+    const float wrap = std::min(viewport->WorkSize.x * 0.7f, 900.0f * k);
+    const ImVec2 size = font->CalcTextSizeA(px, FLT_MAX, wrap, text.c_str());
+    const ImVec2 title_size = font->CalcTextSizeA(title_px, FLT_MAX, 0.0f, title);
+    const float cx = viewport->WorkPos.x + viewport->WorkSize.x * 0.5f;
+    const float y = viewport->WorkPos.y + viewport->WorkSize.y * 0.12f;
+    const float half = std::max(std::max(size.x, title_size.x) * 0.5f + 80.0f * k, 360.0f * k);
+    const float height = title_size.y + size.y + 34.0f * k;
+    const ImVec2 a(cx - half, y), b(cx + half, y + height);
+    const auto shade = [&](int r, int g, int b_, int a_) { return IM_COL32(r, g, b_, int(float(a_) * alpha)); };
+    draw->AddRectFilledMultiColor(a, ImVec2(cx, b.y), shade(0, 0, 0, 0), shade(0, 0, 0, 200), shade(0, 0, 0, 200), shade(0, 0, 0, 0));
+    draw->AddRectFilledMultiColor(ImVec2(cx, a.y), b, shade(0, 0, 0, 200), shade(0, 0, 0, 0), shade(0, 0, 0, 0), shade(0, 0, 0, 200));
+    draw->AddLine(a, ImVec2(b.x, a.y), shade(200, 190, 170, 140), 1.0f * k);
+    draw->AddLine(ImVec2(a.x, b.y), b, shade(200, 190, 170, 140), 1.0f * k);
+    draw->AddText(font, title_px, ImVec2(cx - title_size.x * 0.5f, y + 10.0f * k), shade(170, 160, 138, 255), title);
+    draw->AddText(font, px, ImVec2(cx - size.x * 0.5f, y + title_size.y + 22.0f * k), shade(226, 216, 192, 255), text.c_str(), nullptr, wrap);
+}
+
 void FpsCounter() {
     const auto& s = BbSettings::Get();
     char text[128];
@@ -1886,6 +2125,317 @@ void FpsCounter() {
     ImGui::PopStyleColor(2);
 }
 
+void GameBar(ImDrawList* draw, ImVec2 at, ImVec2 size, float fill, ImU32 light, ImU32 dark, float dim, float k) {
+    const auto faded = [dim](ImU32 c) {
+        const ImU32 a = ImU32(float((c >> IM_COL32_A_SHIFT) & 0xFF) * dim);
+        return (c & ~IM_COL32_A_MASK) | (a << IM_COL32_A_SHIFT);
+    };
+    const ImVec2 end(at.x + size.x, at.y + size.y);
+    draw->AddRectFilled(ImVec2(at.x - k, at.y - k), ImVec2(end.x + k, end.y + k), IM_COL32(0, 0, 0, 170));
+    draw->AddRectFilled(at, end, IM_COL32(24, 14, 12, 210));
+    if (fill > 0.0f) {
+        const ImVec2 fill_end(at.x + size.x * fill, end.y);
+        draw->AddRectFilledMultiColor(at, fill_end, faded(light), faded(light), faded(dark), faded(dark));
+        draw->AddLine(ImVec2(at.x, at.y + 0.5f * k), ImVec2(fill_end.x, at.y + 0.5f * k), faded(IM_COL32(255, 220, 200, 70)),
+                      k);
+    }
+    draw->AddRect(ImVec2(at.x - k, at.y - k), ImVec2(end.x + k, end.y + k), IM_COL32(168, 156, 136, int(200 * dim)), 0.0f,
+                  0, k);
+    draw->AddRectFilled(ImVec2(end.x, at.y - 2.0f * k), ImVec2(end.x + 2.0f * k, end.y + 2.0f * k),
+                        IM_COL32(200, 190, 170, int(220 * dim)));
+}
+
+constexpr float kOrnamentArm = 64.0f / 153.0f, kOrnamentScroll = 43.0f / 153.0f;
+
+ImTextureData* GaugeTexture() {
+    static ImTextureData* texture = nullptr;
+    if (texture) return texture;
+    BbHudGauge::Start();
+    const BbHudGauge::Art* art = BbHudGauge::Ready();
+    if (!art) return nullptr;
+    texture = IM_NEW(ImTextureData)();
+    texture->Create(ImTextureFormat_RGBA32, art->width, art->height);
+    std::memcpy(texture->GetPixels(), art->pixels.data(), art->pixels.size() * 4);
+    ImGui::RegisterUserTexture(texture);
+    return texture;
+}
+
+void GaugePiece(ImDrawList* draw, ImTextureData* texture, const BbHudGauge::Piece& piece, ImVec2 a, ImVec2 b, float fill,
+                ImU32 tint) {
+    const float w = float(texture->Width), h = float(texture->Height);
+    const ImVec2 uv0(float(piece.x) / w, float(piece.y) / h);
+    const ImVec2 uv1(float(piece.x + piece.w * fill) / w, float(piece.y + piece.h) / h);
+    draw->AddImage(texture->GetTexRef(), a, ImVec2(a.x + (b.x - a.x) * fill, b.y), uv0, uv1, tint);
+}
+
+void TexturedBar(ImDrawList* draw, ImTextureData* texture, const BbHudGauge::Piece& fill_piece, ImVec2 at, ImVec2 size,
+                 float fill, float dim, float k) {
+    const BbHudGauge::Art* art = BbHudGauge::Ready();
+    const ImU32 tint = IM_COL32(255, 255, 255, int(255 * dim));
+    const float inset_x = size.y * 0.35f, inset_y = size.y * 0.25f;
+    GaugePiece(draw, texture, art->frame, ImVec2(at.x - inset_x, at.y - inset_y), ImVec2(at.x + size.x + inset_x, at.y + size.y + inset_y),
+               1.0f, tint);
+    if (fill > 0.0f) {
+        GaugePiece(draw, texture, fill_piece, at, ImVec2(at.x + size.x, at.y + size.y), fill, tint);
+        const float edge = at.x + size.x * fill;
+        draw->AddRectFilled(ImVec2(edge - k, at.y), ImVec2(edge + k, at.y + size.y), IM_COL32(230, 226, 214, int(230 * dim)));
+    }
+}
+
+void Ornament(ImDrawList* draw, ImTextureData* texture, const BbHudGauge::Piece& piece, ImVec2 a, ImVec2 b, bool upright,
+              ImU32 tint) {
+    const float w = float(texture->Width), h = float(texture->Height);
+    const float arm = float(piece.w) * kOrnamentArm, scroll = float(piece.w) * kOrnamentScroll;
+    const float total = arm * 2.0f + scroll;
+    const float length = upright ? b.y - a.y : b.x - a.x;
+    const float v0 = float(piece.y) / h, v1 = float(piece.y + piece.h) / h;
+    struct Part {
+        float from, size, u0, u1;
+    };
+    const float u = float(piece.x);
+    const Part parts[] = {{0.0f, arm, u, u + arm}, {arm, scroll, u + arm, u + arm + scroll}, {arm + scroll, arm, u + arm, u}};
+    for (const Part& part : parts) {
+        const float s0 = part.from / total * length, s1 = (part.from + part.size) / total * length;
+        const ImVec2 uv0(part.u0 / w, v0), uv1(part.u1 / w, v1);
+        if (!upright) {
+            draw->AddImage(texture->GetTexRef(), ImVec2(a.x + s0, a.y), ImVec2(a.x + s1, b.y), uv0, uv1, tint);
+        } else {
+            draw->AddImageQuad(texture->GetTexRef(), ImVec2(a.x, a.y + s0), ImVec2(a.x, a.y + s1), ImVec2(b.x, a.y + s1),
+                               ImVec2(b.x, a.y + s0), ImVec2(uv0.x, uv0.y), ImVec2(uv1.x, uv0.y), ImVec2(uv1.x, uv1.y),
+                               ImVec2(uv0.x, uv1.y), tint);
+        }
+    }
+}
+
+void Flourish(ImDrawList* draw, ImTextureData* texture, const BbHudGauge::Piece& piece, ImVec2 a, ImVec2 b, ImU32 tint,
+              bool flip = false) {
+    const float w = float(texture->Width), h = float(texture->Height);
+    const float arm = float(piece.w) * kOrnamentArm, scroll = float(piece.w) * kOrnamentScroll;
+    float v0 = float(piece.y) / h, v1 = float(piece.y + piece.h) / h;
+    if (flip) std::swap(v0, v1);
+    const float u = float(piece.x);
+    const float height = b.y - a.y;
+    const float curl = std::min(height * scroll / float(piece.h), (b.x - a.x) * 0.45f);
+    const float line0 = u + arm * 0.45f, line1 = u + arm * 0.95f;
+    draw->AddImage(texture->GetTexRef(), a, ImVec2(a.x + curl, b.y), ImVec2((u + arm) / w, v0), ImVec2((u + arm + scroll) / w, v1), tint);
+    draw->AddImage(texture->GetTexRef(), ImVec2(a.x + curl, a.y), ImVec2(b.x - curl, b.y), ImVec2(line0 / w, v0), ImVec2(line1 / w, v1), tint);
+    draw->AddImage(texture->GetTexRef(), ImVec2(b.x - curl, a.y), b, ImVec2((u + arm + scroll) / w, v0), ImVec2((u + arm) / w, v1), tint);
+}
+
+ImTextureData* PortraitTexture(const std::string& key, const std::vector<std::uint32_t>& rgba, std::uint32_t version) {
+    struct Entry {
+        ImTextureData* texture = nullptr;
+        std::uint32_t version = 0;
+    };
+    static std::map<std::string, Entry> cache;
+    Entry& e = cache[key];
+    if (rgba.size() != std::size_t(BbFaceShot::kSize) * BbFaceShot::kSize) return e.texture;
+    if (!e.texture) {
+        e.texture = IM_NEW(ImTextureData)();
+        e.texture->Create(ImTextureFormat_RGBA32, BbFaceShot::kSize, BbFaceShot::kSize);
+        std::memcpy(e.texture->GetPixels(), rgba.data(), rgba.size() * 4);
+        ImGui::RegisterUserTexture(e.texture);
+        e.version = version;
+    } else if (e.version != version && e.texture->Status == ImTextureStatus_OK) {
+        std::memcpy(e.texture->GetPixels(), rgba.data(), rgba.size() * 4);
+        const ImTextureRect all{0, 0, std::uint16_t(BbFaceShot::kSize), std::uint16_t(BbFaceShot::kSize)};
+        e.texture->Updates.push_back(all);
+        e.texture->UpdateRect = all;
+        e.texture->SetStatus(ImTextureStatus_WantUpdates);
+        e.version = version;
+    }
+    return e.texture;
+}
+
+ImTextureData* PortraitOf(const std::string& name) {
+    static std::map<std::string, std::pair<std::vector<std::uint32_t>, std::uint32_t>> pixels;
+    auto& [rgba, version] = pixels[name];
+    if (!BbFaceShot::Get(name, rgba, version)) return nullptr;
+    return PortraitTexture("party:" + name, rgba, version);
+}
+
+void PortraitToast() {
+    static std::vector<std::uint32_t> rgba;
+    static std::uint32_t version = 0;
+    if (!BbFaceShot::JustTaken() || !BbFaceShot::OwnRgba(rgba, version)) return;
+    ImTextureData* texture = PortraitTexture("own", rgba, version);
+    if (!texture) return;
+    const float k = base_scale;
+    const ImGuiViewport* viewport = ImGui::GetMainViewport();
+    ImDrawList* draw = ImGui::GetForegroundDrawList();
+    const float size = 96.0f * k;
+    const ImVec2 a(viewport->WorkPos.x + viewport->WorkSize.x - size - 40.0f * k, viewport->WorkPos.y + 120.0f * k);
+    draw->AddRectFilled(ImVec2(a.x - 4.0f * k, a.y - 4.0f * k), ImVec2(a.x + size + 4.0f * k, a.y + size + 4.0f * k),
+                        IM_COL32(0, 0, 0, 200));
+    draw->AddImage(texture->GetTexRef(), a, ImVec2(a.x + size, a.y + size));
+    ImFont* font = name_font ? name_font : ImGui::GetFont();
+    const char* text = BbSettings::MenuText("Portrait saved", "Портрет сохранён");
+    const float px = ImGui::GetFontSize() * 1.1f;
+    const ImVec2 t = font->CalcTextSizeA(px, FLT_MAX, 0.0f, text);
+    draw->AddText(font, px, ImVec2(a.x + (size - t.x) * 0.5f, a.y + size + 8.0f * k), IM_COL32(226, 216, 192, 255), text);
+}
+
+void SpectatorBanner() {
+    std::string name;
+    int choices = 0;
+    if (!BbEngine::OnlineFixes::SpectatedName(name, choices)) return;
+    const float k = base_scale;
+    const ImGuiViewport* viewport = ImGui::GetMainViewport();
+    ImDrawList* draw = ImGui::GetBackgroundDrawList();
+    ImFont* font = name_font ? name_font : ImGui::GetFont();
+    const ImU32 parchment = IM_COL32(226, 216, 192, 255), shadow = IM_COL32(0, 0, 0, 210);
+    const float center = viewport->WorkPos.x + viewport->WorkSize.x * 0.5f;
+    const float top = viewport->WorkPos.y + viewport->WorkSize.y - 190.0f * k;
+    const float title_size = ImGui::GetFontSize() * 1.0f, name_size = ImGui::GetFontSize() * 1.6f, hint_size = ImGui::GetFontSize() * 0.9f;
+    const float half = 300.0f * k;
+    draw->AddRectFilledMultiColor(ImVec2(center - half, top - 8.0f * k), ImVec2(center, top + 86.0f * k), IM_COL32(4, 4, 6, 0),
+                                  IM_COL32(4, 4, 6, 170), IM_COL32(4, 4, 6, 170), IM_COL32(4, 4, 6, 0));
+    draw->AddRectFilledMultiColor(ImVec2(center, top - 8.0f * k), ImVec2(center + half, top + 86.0f * k), IM_COL32(4, 4, 6, 170),
+                                  IM_COL32(4, 4, 6, 0), IM_COL32(4, 4, 6, 0), IM_COL32(4, 4, 6, 170));
+    const auto line = [&](const char* text, float px, float y, ImU32 colour) {
+        const ImVec2 size = font->CalcTextSizeA(px, FLT_MAX, 0.0f, text);
+        const ImVec2 at(center - size.x * 0.5f, y);
+        draw->AddText(font, px, ImVec2(at.x + k, at.y + k), shadow, text);
+        draw->AddText(font, px, at, colour, text);
+    };
+    line(BbSettings::MenuText("Spectating", "Наблюдение"), title_size, top, IM_COL32(196, 160, 92, 255));
+    line(name.c_str(), name_size, top + 22.0f * k, parchment);
+    if (ImTextureData* gauge = GaugeTexture()) {
+        if (const BbHudGauge::Art* art = BbHudGauge::Ready()) {
+            const float w = 200.0f * k, h = w * float(art->header.h) / (float(art->header.w) * (2.0f * kOrnamentArm + kOrnamentScroll));
+            Ornament(draw, gauge, art->header, ImVec2(center - w * 0.5f, top - h - 2.0f * k), ImVec2(center + w * 0.5f, top - 2.0f * k), false,
+                     IM_COL32(255, 255, 255, 220));
+        }
+    }
+    if (choices > 1) {
+        const bool mouse = host_input_device() == InputDevice::KeyboardMouse;
+        line(mouse ? BbSettings::MenuText("Left mouse: next hunter", "ЛКМ: следующий охотник")
+                   : BbSettings::MenuText("R1 / RB: next hunter", "R1 / RB: следующий охотник"),
+             hint_size, top + 58.0f * k, IM_COL32(226, 216, 192, 200));
+    }
+}
+
+void PartyHud(const std::vector<BbEngine::OnlineFixes::PartyRow>& rows) {
+    ImTextureData* gauge = GaugeTexture();
+    const BbHudGauge::Art* art = gauge ? BbHudGauge::Ready() : nullptr;
+    static const ImU32 accents[] = {IM_COL32(196, 160, 92, 255), IM_COL32(92, 160, 170, 255),
+                                    IM_COL32(176, 78, 64, 255), IM_COL32(140, 110, 180, 255)};
+    const float k = base_scale;
+    const ImGuiViewport* viewport = ImGui::GetMainViewport();
+    ImDrawList* draw = ImGui::GetBackgroundDrawList();
+    const float left = viewport->WorkPos.x + 40.0f * k;
+    const float frame_h = 50.0f * k;
+    const float frame_w = art ? frame_h * float(art->portrait.w) / float(art->portrait.h) : frame_h;
+    const float card_w = 320.0f * k, card_h = frame_h + 10.0f * k, gap = 6.0f * k;
+    const ImU32 fallen = IM_COL32(176, 52, 44, 255);
+    float top = viewport->WorkPos.y + 240.0f * k;
+    ImFont* font = name_font ? name_font : ImGui::GetFont();
+    const float name_size = ImGui::GetFontSize() * 1.3f;
+    const float where_size = ImGui::GetFontSize() * 1.0f;
+    const ImU32 parchment = IM_COL32(226, 216, 192, 255);
+    const float ornament_ratio = art ? float(art->header.h) / (float(art->header.w) * (2.0f * kOrnamentArm + kOrnamentScroll)) : 0.0f;
+    if (art && !rows.empty()) {
+        const float header_w = 200.0f * k, header_h = header_w * ornament_ratio;
+        Ornament(draw, gauge, art->header, ImVec2(left, top - header_h - 4.0f * k), ImVec2(left + header_w, top - 4.0f * k),
+                 false, IM_COL32(255, 255, 255, 220));
+    }
+    for (std::size_t i = 0; i < rows.size(); ++i) {
+        const auto& row = rows[i];
+        const ImU32 accent = row.down ? fallen : accents[i % std::size(accents)];
+        const float dim = row.down ? 0.45f : 1.0f;
+        const ImVec2 a(left, top), b(left + card_w, top + card_h);
+        draw->AddRectFilledMultiColor(a, b, IM_COL32(4, 4, 6, 170), IM_COL32(4, 4, 6, 0), IM_COL32(4, 4, 6, 0),
+                                      IM_COL32(4, 4, 6, 170));
+        if (art) {
+            const float thick = 8.0f * k;
+            const ImU32 bright = IM_COL32(((accent >> IM_COL32_R_SHIFT) & 0xFF) / 2 + 128, ((accent >> IM_COL32_G_SHIFT) & 0xFF) / 2 + 128,
+                                          ((accent >> IM_COL32_B_SHIFT) & 0xFF) / 2 + 128, 255);
+            Ornament(draw, gauge, art->header, ImVec2(left - thick - 3.0f * k, top), ImVec2(left - 3.0f * k, top + card_h), true,
+                     bright);
+        } else {
+            draw->AddRectFilled(a, ImVec2(left + 1.5f * k, top + card_h), accent);
+        }
+        const ImVec2 box(left + 8.0f * k, top + 5.0f * k);
+        const ImVec2 box_end(box.x + frame_w, box.y + frame_h);
+        char initial[8] = {row.name.empty() ? '?' : char(std::toupper(static_cast<unsigned char>(row.name[0]))), 0};
+        const float initial_px = name_size * 1.5f;
+        const ImVec2 initial_size = font->CalcTextSizeA(initial_px, FLT_MAX, 0.0f, initial);
+        const ImVec2 initial_at(box.x + (frame_w - initial_size.x) * 0.5f, box.y + (frame_h - initial_size.y) * 0.5f);
+        const float inset = 4.0f * k;
+        const ImVec2 inner(box.x + inset, box.y + inset), inner_end(box_end.x - inset, box_end.y - inset);
+        ImTextureData* face = PortraitOf(row.name);
+        if (art) {
+            GaugePiece(draw, gauge, art->portrait, box, box_end, 1.0f, IM_COL32(255, 255, 255, row.down ? 150 : 255));
+            if (!face)
+                GaugePiece(draw, gauge, i == 0 ? art->rust : art->teal, inner, inner_end, 1.0f,
+                           row.down ? IM_COL32(150, 60, 50, 255) : IM_COL32(255, 255, 255, 230));
+        } else {
+            draw->AddRectFilled(box, box_end, IM_COL32(18, 20, 26, 230));
+        }
+        if (face) {
+            const float crop = 0.5f * (1.0f - (inner_end.x - inner.x) / (inner_end.y - inner.y));
+            draw->AddImage(face->GetTexRef(), inner, inner_end, ImVec2(crop, 0.0f), ImVec2(1.0f - crop, 1.0f),
+                           row.down ? IM_COL32(170, 70, 60, 200) : IM_COL32(255, 255, 255, 255));
+        } else {
+            draw->AddText(font, initial_px, ImVec2(initial_at.x + k, initial_at.y + k), IM_COL32(0, 0, 0, 200), initial);
+            draw->AddText(font, initial_px, initial_at,
+                          row.down ? IM_COL32(170, 70, 60, 255)
+                                   : (parchment & ~IM_COL32_A_MASK) | (ImU32(255 * dim) << IM_COL32_A_SHIFT),
+                          initial);
+        }
+        if (art) {
+            const float fil_h = frame_w * float(art->filigree.h) / float(art->filigree.w);
+            GaugePiece(draw, gauge, art->filigree, ImVec2(box.x, box.y - fil_h * 0.6f), ImVec2(box_end.x, box.y + fil_h * 0.4f),
+                       1.0f, IM_COL32(255, 255, 255, row.down ? 150 : 255));
+        } else {
+            draw->AddRect(box, box_end, accent, 0.0f, 0, 1.5f * k);
+        }
+        const float text_x = box_end.x + 12.0f * k;
+        const float bar_w = card_w - (text_x - left) - 24.0f * k;
+        draw->AddText(font, name_size, ImVec2(text_x + k, top + 7.0f * k), IM_COL32(0, 0, 0, int(200 * dim)), row.name.c_str());
+        draw->AddText(font, name_size, ImVec2(text_x, top + 6.0f * k),
+                      (parchment & ~IM_COL32_A_MASK) | (ImU32(255 * dim) << IM_COL32_A_SHIFT), row.name.c_str());
+        if (BbVoice::TalkingName(row.name)) {
+            const float name_w = font->CalcTextSizeA(name_size, FLT_MAX, 0.0f, row.name.c_str()).x;
+            const ImVec2 c(text_x + name_w + 10.0f * k, top + 6.0f * k + name_size * 0.55f);
+            draw->AddCircleFilled(c, 3.0f * k, IM_COL32(226, 216, 192, 255));
+            draw->AddCircle(c, 6.0f * k, IM_COL32(226, 216, 192, 160), 0, 1.2f * k);
+        }
+        char where[32] = "";
+        if (row.down) {
+            std::snprintf(where, sizeof where, "%s", BbSettings::MenuText("dead", "мёртв"));
+        } else if (row.distance >= 0.0f) {
+            std::snprintf(where, sizeof where, "%.0f m", row.distance);
+        }
+        const float arrow_room = row.distance >= 0.0f && !row.down ? 16.0f * k : 0.0f;
+        if (where[0]) {
+            const ImVec2 size = font->CalcTextSizeA(where_size, FLT_MAX, 0.0f, where);
+            const ImVec2 at(text_x + bar_w - arrow_room - size.x, top + 7.0f * k);
+            draw->AddText(font, where_size, ImVec2(at.x + k, at.y + k), IM_COL32(0, 0, 0, 200), where);
+            draw->AddText(font, where_size, at, row.down ? IM_COL32(200, 90, 70, 255) : IM_COL32(214, 206, 186, 235), where);
+        }
+        if (arrow_room > 0.0f) {
+            const ImVec2 c(text_x + bar_w - 6.0f * k, top + 7.0f * k + where_size * 0.55f);
+            const ImVec2 d(std::sin(row.bearing), -std::cos(row.bearing));
+            const ImVec2 p(-d.y, d.x);
+            const float tip = 6.0f * k, back = 4.0f * k, wide = 4.0f * k;
+            draw->AddTriangleFilled(ImVec2(c.x + d.x * tip, c.y + d.y * tip),
+                                    ImVec2(c.x - d.x * back + p.x * wide, c.y - d.y * back + p.y * wide),
+                                    ImVec2(c.x - d.x * back - p.x * wide, c.y - d.y * back - p.y * wide),
+                                    IM_COL32(220, 214, 200, 230));
+        }
+        const float hp_y = top + 31.0f * k, hp_h = 7.0f * k;
+        if (art) TexturedBar(draw, gauge, art->health, ImVec2(text_x, hp_y), ImVec2(bar_w, hp_h), row.health, dim, k);
+        else GameBar(draw, ImVec2(text_x, hp_y), ImVec2(bar_w, hp_h), row.health, IM_COL32(196, 46, 40, 255),
+                     IM_COL32(112, 16, 16, 255), dim, k);
+        const float sp_y = hp_y + hp_h + 4.0f * k, sp_h = 5.0f * k;
+        if (art) TexturedBar(draw, gauge, art->stamina, ImVec2(text_x, sp_y), ImVec2(bar_w * 0.8f, sp_h), row.stamina, dim, k);
+        else GameBar(draw, ImVec2(text_x, sp_y), ImVec2(bar_w * 0.8f, sp_h), row.stamina, IM_COL32(112, 172, 88, 255),
+                     IM_COL32(46, 98, 42, 255), dim, k);
+        top += card_h + gap;
+    }
+}
+
 void TextPrompt() {
     std::string title, text;
     {
@@ -1961,6 +2511,16 @@ void Init(const Vulkan::Instance& instance, vk::Format format, u32 image_count) 
     cjk_config.MergeMode = true;
     io.Fonts->AddFontFromMemoryTTF(const_cast<unsigned char*>(bb_font_cjk),
                                    int(bb_font_cjk_end - bb_font_cjk), 18.0f, &cjk_config);
+    ImFontConfig name_config;
+    name_config.FontDataOwnedByAtlas = false;
+    name_font = io.Fonts->AddFontFromMemoryTTF(const_cast<unsigned char*>(bb_font_name),
+                                               int(bb_font_name_end - bb_font_name), 18.0f, &name_config);
+    ImFontConfig name_fallback = font_config;
+    name_fallback.MergeMode = true;
+    io.Fonts->AddFontFromMemoryTTF(const_cast<unsigned char*>(bb_font_ttf), int(bb_font_ttf_end - bb_font_ttf), 18.0f,
+                                   &name_fallback);
+    io.Fonts->AddFontFromMemoryTTF(const_cast<unsigned char*>(bb_font_cjk), int(bb_font_cjk_end - bb_font_cjk), 18.0f,
+                                   &cjk_config);
 
     const vk::Instance vk_instance = instance.GetInstance();
     ImGui_ImplVulkan_LoadFunctions(
@@ -2014,6 +2574,8 @@ void UpdateTextInput(SDL_Window* window) {
     }
 }
 
+void CoopInput(int move, int side, bool select, bool back);
+
 bool HandleEvent(const SDL_Event& event) {
     std::scoped_lock lock{imgui_mutex};
     if (!initialized) {
@@ -2025,6 +2587,28 @@ bool HandleEvent(const SDL_Event& event) {
     case SDL_EVENT_KEY_DOWN:
     case SDL_EVENT_KEY_UP: {
         const bool down = event.type == SDL_EVENT_KEY_DOWN;
+        if (binding_talk_key && down && !event.key.repeat) {
+            if (event.key.key != SDLK_ESCAPE) BbSettings::Get().voice_talk_key = int(event.key.scancode);
+            binding_talk_key = false;
+            BbSettings::Save();
+            return true;
+        }
+        if (!is_open && down && !event.key.repeat && event.key.key == SDLK_F2) {
+            coop_open = !coop_open;
+            coop_armed.clear();
+            return true;
+        }
+        if (!is_open && coop_open) {
+            if (down) {
+                const SDL_Keycode key = event.key.key;
+                const int move = key == SDLK_UP || key == SDLK_W ? -1 : key == SDLK_DOWN || key == SDLK_S ? 1 : 0;
+                const int side = key == SDLK_LEFT || key == SDLK_A ? -1 : key == SDLK_RIGHT || key == SDLK_D ? 1 : 0;
+                const bool select = !event.key.repeat && (key == SDLK_RETURN || key == SDLK_SPACE || key == SDLK_E || key == SDLK_KP_ENTER);
+                const bool back = !event.key.repeat && (key == SDLK_ESCAPE || key == SDLK_BACKSPACE || key == SDLK_Q);
+                CoopInput(move, side, select, back);
+            }
+            return true;
+        }
         if (down && !event.key.repeat &&
             ((event.key.key == SDLK_INSERT && (is_open || MenuKeys() != OverlayKeys::Off)) ||
              (is_open && event.key.key == SDLK_ESCAPE && !io.WantTextInput))) {
@@ -2052,7 +2636,21 @@ bool HandleEvent(const SDL_Event& event) {
             r3_down = down;
         }
         if (down && l3_down && r3_down && (is_open || MenuKeys() == OverlayKeys::Both)) {
+            coop_open = false;
             SetOpen(!is_open);
+            return true;
+        }
+        if (!is_open && down && l3_down && button == SDL_GAMEPAD_BUTTON_DPAD_UP) {
+            coop_open = !coop_open;
+            coop_armed.clear();
+            return true;
+        }
+        if (!is_open && coop_open) {
+            if (down) {
+                const int move = button == SDL_GAMEPAD_BUTTON_DPAD_UP ? -1 : button == SDL_GAMEPAD_BUTTON_DPAD_DOWN ? 1 : 0;
+                const int side = button == SDL_GAMEPAD_BUTTON_DPAD_LEFT ? -1 : button == SDL_GAMEPAD_BUTTON_DPAD_RIGHT ? 1 : 0;
+                CoopInput(move, side, button == SDL_GAMEPAD_BUTTON_SOUTH, button == SDL_GAMEPAD_BUTTON_EAST);
+            }
             return true;
         }
         if (!is_open) {
@@ -2083,7 +2681,7 @@ bool HandleEvent(const SDL_Event& event) {
         return true;
     }
     case SDL_EVENT_MOUSE_MOTION: {
-        if (!is_open) {
+        if (!is_open && !coop_open) {
             return false;
         }
         const float density = PixelDensity(event.motion.windowID);
@@ -2092,7 +2690,13 @@ bool HandleEvent(const SDL_Event& event) {
     }
     case SDL_EVENT_MOUSE_BUTTON_DOWN:
     case SDL_EVENT_MOUSE_BUTTON_UP: {
-        if (!is_open) {
+        if (binding_talk_key && event.type == SDL_EVENT_MOUSE_BUTTON_DOWN && event.button.button != SDL_BUTTON_LEFT) {
+            BbSettings::Get().voice_talk_key = -int(event.button.button);
+            binding_talk_key = false;
+            BbSettings::Save();
+            return true;
+        }
+        if (!is_open && !coop_open) {
             return false;
         }
         const int button = event.button.button == SDL_BUTTON_LEFT    ? 0
@@ -2116,8 +2720,8 @@ bool HandleEvent(const SDL_Event& event) {
 }
 
 bool Visible() {
-    return initialized &&
-           (menu_open || prompt_active || BbSettings::Get().show_fps || CompileNoteActive());
+    return initialized && (menu_open || prompt_active || BbSettings::Get().show_fps || CompileNoteActive() || RelayNoteActive() || SummonNoteActive() || AnnouncementActive() || coop_open ||
+                           !BbEngine::OnlineFixes::PartyRows().empty() || BbEngine::OnlineFixes::Spectating() || BbFaceShot::JustTaken());
 }
 
 bool MenuOpen() {
@@ -2125,7 +2729,299 @@ bool MenuOpen() {
 }
 
 bool CapturesInput() {
-    return menu_open || prompt_active;
+    return menu_open || prompt_active || coop_open;
+}
+
+enum class CoopKind { Summon, Member, BringAll, End, Join, GoTo, Leave, Voice, Mic, Speak, TalkKey, Volume, Listen, Close };
+
+struct CoopItem {
+    CoopKind kind;
+    int slot = 0;
+    std::string name;
+};
+
+std::vector<CoopItem> CoopItems() {
+    namespace Online = BbEngine::OnlineFixes;
+    std::vector<CoopItem> items;
+    if (BbRoom::Active()) {
+        if (BbRoom::IsHost()) {
+            items.push_back({CoopKind::Summon});
+            const auto members = BbRoom::PartyMembers();
+            for (const auto& [slot, name] : members) items.push_back({CoopKind::Member, slot, name});
+            if (!members.empty()) {
+                items.push_back({CoopKind::BringAll});
+                items.push_back({CoopKind::End});
+            }
+        } else if (Online::PartyRole() == 6) {
+            items.push_back({CoopKind::GoTo});
+            items.push_back({CoopKind::Leave});
+        } else {
+            items.push_back({CoopKind::Join});
+        }
+    }
+    if (BbRoom::Active()) {
+        items.push_back({CoopKind::Voice});
+        if (BbSettings::Get().voice_enabled) {
+            items.push_back({CoopKind::Mic});
+            items.push_back({CoopKind::Speak});
+            if (BbSettings::Get().voice_push_to_talk) items.push_back({CoopKind::TalkKey});
+            items.push_back({CoopKind::Volume});
+            for (const auto& t : BbVoice::Talkers()) items.push_back({CoopKind::Listen, t.slot, t.name});
+        }
+    }
+    items.push_back({CoopKind::Close});
+    return items;
+}
+
+bool CoopArmed(const std::string& what) {
+    const auto now = std::chrono::steady_clock::now();
+    if (coop_armed == what && now - coop_armed_at < std::chrono::seconds(4)) {
+        coop_armed.clear();
+        return true;
+    }
+    coop_armed = what;
+    coop_armed_at = now;
+    return false;
+}
+
+void CoopActivate(const CoopItem& item) {
+    namespace Online = BbEngine::OnlineFixes;
+    switch (item.kind) {
+    case CoopKind::Summon:
+    case CoopKind::Join:
+        if (Online::Summoning()) Online::StopSummon();
+        else Online::StartSummon();
+        break;
+    case CoopKind::Member:
+        if (coop_column == 0) BbRoom::SendBring(item.slot);
+        else if (CoopArmed("kick:" + std::to_string(item.slot))) BbRoom::Kick(item.slot);
+        break;
+    case CoopKind::BringAll:
+        BbRoom::SendBring(0);
+        break;
+    case CoopKind::End:
+        if (CoopArmed("end")) {
+            Online::StopSummon();
+            for (const auto& [slot, name] : BbRoom::PartyMembers()) BbRoom::Kick(slot);
+        }
+        break;
+    case CoopKind::GoTo:
+        Online::GoToHost();
+        break;
+    case CoopKind::Leave:
+        if (CoopArmed("leave")) BbRoom::LeaveParty();
+        break;
+    case CoopKind::Voice:
+        BbSettings::Get().voice_enabled = !BbSettings::Get().voice_enabled;
+        BbSettings::Save();
+        break;
+    case CoopKind::Mic:
+        BbSettings::Get().voice_mic_muted = !BbSettings::Get().voice_mic_muted;
+        BbSettings::Save();
+        break;
+    case CoopKind::Speak:
+        BbSettings::Get().voice_push_to_talk = !BbSettings::Get().voice_push_to_talk;
+        BbSettings::Save();
+        break;
+    case CoopKind::TalkKey:
+        binding_talk_key = true;
+        break;
+    case CoopKind::Volume:
+        break;
+    case CoopKind::Listen: {
+        bool muted = false;
+        for (const auto& t : BbVoice::Talkers())
+            if (t.name == item.name) muted = t.muted;
+        BbVoice::SetMuted(item.name, !muted);
+        break;
+    }
+    case CoopKind::Close:
+        coop_open = false;
+        break;
+    }
+}
+
+void CoopInput(int move, int side, bool select, bool back) {
+    const auto items = CoopItems();
+    const int count = int(items.size());
+    if (back) {
+        coop_open = false;
+        return;
+    }
+    if (move) {
+        coop_row = (coop_row + move + count) % count;
+        coop_armed.clear();
+    }
+    coop_row = std::clamp(coop_row, 0, count - 1);
+    if (side && items[coop_row].kind == CoopKind::Volume) {
+        auto& volume = BbSettings::Get().voice_volume;
+        volume = std::clamp(volume + (side < 0 ? -0.25f : 0.25f), 0.0f, 5.0f);
+        BbSettings::Save();
+    }
+    if (side && items[coop_row].kind == CoopKind::Member) {
+        coop_column = side < 0 ? 0 : 1;
+        coop_armed.clear();
+    }
+    if (select) CoopActivate(items[coop_row]);
+}
+
+bool CoopArmedNow(const std::string& what) {
+    return coop_armed == what && std::chrono::steady_clock::now() - coop_armed_at < std::chrono::seconds(4);
+}
+
+std::string CoopLabel(const CoopItem& item, bool chosen) {
+    namespace Online = BbEngine::OnlineFixes;
+    switch (item.kind) {
+    case CoopKind::Summon:
+        return Online::Summoning() ? BbSettings::MenuText("Stop summoning", "Остановить призыв")
+                                   : BbSettings::MenuText("Start summon", "Начать призыв");
+    case CoopKind::Join:
+        return Online::Summoning() ? BbSettings::MenuText("Take back the sign", "Убрать знак")
+                                   : BbSettings::MenuText("Send sign", "Отправить знак");
+    case CoopKind::GoTo:
+        return BbSettings::MenuText("Go to the host", "К хозяину");
+    case CoopKind::Member:
+        if (chosen && CoopArmedNow("kick:" + std::to_string(item.slot)))
+            return std::string(BbSettings::MenuText("Press again to send home ", "Нажмите ещё раз, чтобы выгнать ")) + item.name;
+        return item.name;
+    case CoopKind::BringAll:
+        return BbSettings::MenuText("Bring all hunters", "Призвать всех к себе");
+    case CoopKind::End:
+        return chosen && CoopArmedNow("end") ? BbSettings::MenuText("Press again to end the session", "Нажмите ещё раз, чтобы завершить")
+                                             : BbSettings::MenuText("End session", "Завершить сеанс");
+    case CoopKind::Leave:
+        return chosen && CoopArmedNow("leave") ? BbSettings::MenuText("Press again to go back", "Нажмите ещё раз, чтобы вернуться")
+                                               : BbSettings::MenuText("Return to your own world", "Вернуться в свой мир");
+    case CoopKind::Voice:
+        return BbSettings::Get().voice_enabled ? BbSettings::MenuText("Voice chat: on", "Голосовой чат: вкл.")
+                                               : BbSettings::MenuText("Voice chat: off", "Голосовой чат: выкл.");
+    case CoopKind::Mic:
+        return BbSettings::Get().voice_mic_muted ? BbSettings::MenuText("Microphone: muted", "Микрофон: выкл.")
+                                                 : BbSettings::MenuText("Microphone: on", "Микрофон: вкл.");
+    case CoopKind::Speak:
+        return BbSettings::Get().voice_push_to_talk ? BbSettings::MenuText("Speak: hold the talk key", "Говорить: по кнопке")
+                                                    : BbSettings::MenuText("Speak: when you talk", "Говорить: голосом");
+    case CoopKind::TalkKey:
+        return binding_talk_key ? std::string(BbSettings::MenuText("Press a key or mouse button...", "Нажмите кнопку..."))
+                                : std::string(BbSettings::MenuText("Talk key: ", "Кнопка разговора: ")) + BbVoice::KeyName(BbSettings::Get().voice_talk_key);
+    case CoopKind::Volume: {
+        char text[64];
+        std::snprintf(text, sizeof text, "%s %.0f%%   < >", BbSettings::MenuText("Voice volume:", "Громкость голоса:"),
+                      BbSettings::Get().voice_volume * 100.0f);
+        return text;
+    }
+    case CoopKind::Listen: {
+        bool muted = false, talking = false;
+        for (const auto& t : BbVoice::Talkers())
+            if (t.slot == item.slot) muted = t.muted, talking = t.talking;
+        return item.name + (muted ? BbSettings::MenuText(": muted", ": заглушён") : talking ? BbSettings::MenuText(": speaking", ": говорит")
+                                                                                           : BbSettings::MenuText(": heard", ": слышно"));
+    }
+    case CoopKind::Close:
+        return BbSettings::MenuText("Close", "Закрыть");
+    }
+    return {};
+}
+
+void CoopMenu() {
+    ImTextureData* gauge = GaugeTexture();
+    const BbHudGauge::Art* art = gauge ? BbHudGauge::Ready() : nullptr;
+    const auto items = CoopItems();
+    coop_row = std::clamp(coop_row, 0, int(items.size()) - 1);
+    const float k = base_scale;
+    const ImGuiViewport* viewport = ImGui::GetMainViewport();
+    ImDrawList* draw = ImGui::GetForegroundDrawList();
+    ImFont* font = name_font ? name_font : ImGui::GetFont();
+    const float title_px = ImGui::GetFontSize() * 1.9f, item_px = ImGui::GetFontSize() * 1.45f, hint_px = ImGui::GetFontSize() * 1.05f;
+    const float row_h = item_px + 18.0f * k;
+    const float width = 620.0f * k;
+    const float height = title_px + 70.0f * k + row_h * float(items.size()) + hint_px + 40.0f * k;
+    const float cx = viewport->WorkPos.x + viewport->WorkSize.x * 0.5f;
+    const float top = viewport->WorkPos.y + (viewport->WorkSize.y - height) * 0.5f;
+    const ImU32 parchment = IM_COL32(226, 216, 192, 255), faded = IM_COL32(150, 142, 126, 230), red = IM_COL32(220, 120, 100, 255);
+    draw->AddRectFilled(viewport->WorkPos, ImVec2(viewport->WorkPos.x + viewport->WorkSize.x, viewport->WorkPos.y + viewport->WorkSize.y),
+                        IM_COL32(0, 0, 0, 110));
+    const ImVec2 a(cx - width * 0.5f, top), b(cx + width * 0.5f, top + height);
+    draw->AddRectFilledMultiColor(a, ImVec2(cx, b.y), IM_COL32(0, 0, 0, 40), IM_COL32(4, 4, 6, 225), IM_COL32(4, 4, 6, 225),
+                                  IM_COL32(0, 0, 0, 40));
+    draw->AddRectFilledMultiColor(ImVec2(cx, a.y), b, IM_COL32(4, 4, 6, 225), IM_COL32(0, 0, 0, 40), IM_COL32(0, 0, 0, 40),
+                                  IM_COL32(4, 4, 6, 225));
+    const auto line = [&](float y, float half, bool flip) {
+        if (art) {
+            const float h = 18.0f * k;
+            Flourish(draw, gauge, art->header, ImVec2(cx - half, y - h * 0.5f), ImVec2(cx + half, y + h * 0.5f), IM_COL32(255, 255, 255, 235),
+                     flip);
+        } else {
+            draw->AddLine(ImVec2(cx - half, y), ImVec2(cx + half, y), IM_COL32(200, 190, 170, 160), k);
+        }
+    };
+    const auto text = [&](float px, ImVec2 at, ImU32 color, const char* str) {
+        draw->AddText(font, px, ImVec2(at.x + k, at.y + k), IM_COL32(0, 0, 0, 210), str);
+        draw->AddText(font, px, at, color, str);
+    };
+    const char* title = BbSettings::MenuText("Seamless Co-op", "Бесшовная совместная игра");
+    const ImVec2 title_size = font->CalcTextSizeA(title_px, FLT_MAX, 0.0f, title);
+    text(title_px, ImVec2(cx - title_size.x * 0.5f, top + 18.0f * k), parchment, title);
+    float y = top + title_px + 34.0f * k;
+    line(y, 85.0f * k, false);
+    y += 22.0f * k;
+    const ImGuiIO& io = ImGui::GetIO();
+    const ImVec2 mouse = io.MousePos;
+    const bool moved = io.MouseDelta.x != 0.0f || io.MouseDelta.y != 0.0f;
+    for (int i = 0; i < int(items.size()); ++i) {
+        const CoopItem& item = items[i];
+        const ImVec2 ra(a.x + 40.0f * k, y), rb(b.x - 40.0f * k, y + row_h);
+        const bool over = mouse.x >= ra.x && mouse.x < rb.x && mouse.y >= ra.y && mouse.y < rb.y;
+        if (over && moved) coop_row = i;
+        const bool chosen = i == coop_row;
+        if (chosen) {
+            const float mid = (ra.x + rb.x) * 0.5f;
+            draw->AddRectFilledMultiColor(ra, ImVec2(mid, rb.y), IM_COL32(120, 100, 60, 0), IM_COL32(120, 100, 60, 70),
+                                          IM_COL32(120, 100, 60, 70), IM_COL32(120, 100, 60, 0));
+            draw->AddRectFilledMultiColor(ImVec2(mid, ra.y), rb, IM_COL32(120, 100, 60, 70), IM_COL32(120, 100, 60, 0),
+                                          IM_COL32(120, 100, 60, 0), IM_COL32(120, 100, 60, 70));
+        }
+        const std::string label = CoopLabel(item, chosen);
+        const float ty = y + (row_h - item_px) * 0.5f;
+        if (item.kind == CoopKind::Member) {
+            text(item_px, ImVec2(ra.x + 20.0f * k, ty), chosen ? parchment : faded, label.c_str());
+            const char* bring = BbSettings::MenuText("Bring", "Призвать");
+            const char* kick = BbSettings::MenuText("Kick", "Выгнать");
+            const float kick_w = font->CalcTextSizeA(item_px, FLT_MAX, 0.0f, kick).x;
+            const float bring_w = font->CalcTextSizeA(item_px, FLT_MAX, 0.0f, bring).x;
+            const float kick_x = rb.x - 20.0f * k - kick_w, bring_x = kick_x - 40.0f * k - bring_w;
+            const bool on_bring = chosen && coop_column == 0, on_kick = chosen && coop_column == 1;
+            text(item_px, ImVec2(bring_x, ty), on_bring ? parchment : faded, bring);
+            text(item_px, ImVec2(kick_x, ty), on_kick ? red : faded, kick);
+            const float under = ty + item_px + 2.0f * k;
+            if (on_bring) draw->AddLine(ImVec2(bring_x, under), ImVec2(bring_x + bring_w, under), parchment, k);
+            if (on_kick) draw->AddLine(ImVec2(kick_x, under), ImVec2(kick_x + kick_w, under), red, k);
+            if (over && ImGui::IsMouseClicked(0)) {
+                coop_row = i;
+                if (mouse.x >= bring_x && mouse.x < bring_x + bring_w) {
+                    coop_column = 0;
+                    CoopActivate(item);
+                } else if (mouse.x >= kick_x && mouse.x < kick_x + kick_w) {
+                    coop_column = 1;
+                    CoopActivate(item);
+                }
+            }
+        } else {
+            const ImVec2 size = font->CalcTextSizeA(item_px, FLT_MAX, 0.0f, label.c_str());
+            text(item_px, ImVec2(cx - size.x * 0.5f, ty), chosen ? parchment : faded, label.c_str());
+            if (over && ImGui::IsMouseClicked(0)) {
+                coop_row = i;
+                CoopActivate(item);
+            }
+        }
+        y += row_h;
+    }
+    y += 10.0f * k;
+    const char* hint = BbSettings::MenuText("Enter / Cross: select      Arrows / D-pad: move      Esc / Circle: back",
+                                            "Enter / Крест: выбрать      Стрелки: двигаться      Esc / Круг: назад");
+    const ImVec2 hint_size = font->CalcTextSizeA(hint_px, FLT_MAX, 0.0f, hint);
+    text(hint_px, ImVec2(cx - hint_size.x * 0.5f, y + 6.0f * k), faded, hint);
+    line(y + hint_px + 22.0f * k, width * 0.5f - 30.0f * k, true);
 }
 
 void Render(vk::CommandBuffer cmdbuf, vk::ImageView view, vk::Extent2D extent) {
@@ -2162,8 +3058,24 @@ void Render(vk::CommandBuffer cmdbuf, vk::ImageView view, vk::Extent2D extent) {
     if (!menu_open && CompileNoteActive()) {
         CompileNote();
     }
+    if (!menu_open && RelayNoteActive()) {
+        RelayNote();
+    }
+    if (!menu_open) {
+        SummonNote();
+        Announcement();
+    }
     if (prompt_active && !menu_open) {
         TextPrompt();
+    }
+    if (!menu_open) {
+        const auto party = BbEngine::OnlineFixes::PartyRows();
+        if (!party.empty()) PartyHud(party);
+        SpectatorBanner();
+        PortraitToast();
+    }
+    if (coop_open && !menu_open) {
+        CoopMenu();
     }
     ImGui::Render();
 

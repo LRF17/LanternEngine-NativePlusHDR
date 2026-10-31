@@ -44,6 +44,20 @@ Folders Locate() {
     return f;
 }
 
+std::optional<std::string> PlateTitle(const std::map<std::string, std::string>& settings, const char* key) {
+    const auto set = Setting(settings, key);
+    if (!set) return std::optional<std::string>(std::string());
+    std::string title;
+    for (const char c : *set)
+        if (std::uint8_t(c) >= 0x20 && c != 0x7f) title.push_back(c);
+    if (title.size() > 48) {
+        title.resize(48);
+        while (!title.empty() && (std::uint8_t(title.back()) & 0xc0) == 0x80) title.pop_back();
+        if (!title.empty() && std::uint8_t(title.back()) >= 0xc0) title.pop_back();
+    }
+    return title;
+}
+
 std::optional<std::string> SettingValue(const fs::path& config, const std::string& key) {
     return Setting(ReadSettings(config), key);
 }
@@ -328,6 +342,8 @@ int Main(std::vector<std::wstring> arguments) {
         SetEnv("BB_FSR411_DIR", Utf8(data / "fsr4_411"));
     if (!Env("BB_FSR4VK_DIR") && fs::is_regular_file(folders.engine / "fsr4vk" / "amd_fidelityfx_upscaler_vk.dll", error))
         SetEnv("BB_FSR4VK_DIR", Utf8(folders.engine / "fsr4vk"));
+    if (!Env("BB_FSR_SDK_DIR") && fs::is_regular_file(folders.engine / "fsr_sdk" / "amd_fidelityfx_loader_vk.dll", error))
+        SetEnv("BB_FSR_SDK_DIR", Utf8(folders.engine / "fsr_sdk"));
     const fs::path remembered = out / "game_dir.txt";
     if ((!game || game->empty()) && fs::is_regular_file(remembered, error)) game = Trim(ReadText(remembered));
     const fs::path game_dir = game && !game->empty() ? Path(*game) : folders.package.parent_path() / "CUSA03173";
@@ -423,11 +439,21 @@ int Main(std::vector<std::wstring> arguments) {
                 Log("Engine: Dream mirror skipped: %s", e.what());
             }
         }
+        if (Setting(settings, "ui_4k") != "0") {
+            std::error_code ui_error;
+            const fs::path ui = data / "engine-assets" / "ui-4k";
+            if (fs::is_regular_file(ui / "complete", ui_error)) {
+                SetEnv("BB_UI_4K", Utf8(ui));
+                Log("Engine: 4K menu textures from %s", Utf8(ui).c_str());
+            }
+        }
         if (is_on("change_appearance") || is_on("camera_controls") || is_on("rebirth") || is_on("graphics_controls") ||
             Setting(settings, "pc_controls") != "0" || Setting(settings, "widescreen") != "0") {
             try {
                 const fs::path menus = PrepareMenuAssets(merged, out / "eboot.elf", data / "engine-assets",
-                                                         out / "bb-engine-assets.exe", is_on("rebirth"));
+                                                         out / "bb-engine-assets.exe", is_on("rebirth"),
+                                                         PlateTitle(settings, "plate_host_title"),
+                                                         PlateTitle(settings, "plate_guest_title"));
                 SetEnv("BB_PC_MENU_ASSETS", Utf8(menus));
                 Log("Engine: native PC menus prepared locally: %s", Utf8(menus).c_str());
                 if (is_on("rebirth"))

@@ -174,7 +174,8 @@ Preset **Off** shows the game's own SDR look in HDR10, as a reference.
 ## Versions and updates
 
 - Versions follow Lantern's: **0.9.38.1** is this fork's first release on Lantern 0.9.38,
-  **0.9.38.2** and **0.9.38.3** the next ones. Betas (`0.9.38.2-beta.1`) come from the
+  **0.9.38.2** and **0.9.38.3** the next ones; **0.9.39.1** the first on Lantern 0.9.39 (its betas
+  on Lantern 0.9.39's betas). Betas (`0.9.39.1-beta.1`) come from the
   `lantern-Native+HDR-beta` branch, releases from `lantern-Native+HDR`.
 - The launcher updates itself from this fork's releases.
 - **Updating from an earlier version**: your settings are kept. Settings that no longer exist
@@ -201,14 +202,14 @@ Preset **Off** shows the game's own SDR look in HDR10, as a reference.
 
 ## Build from source
 
-This fork carries reproducible patches over Lantern 0.9.38: `ports/lantern/nativeplus-engine.patch`
+This fork carries reproducible patches over Lantern 0.9.39 beta 23: `ports/lantern/nativeplus-engine.patch`
 on Lantern's `engine/` and `nativeplus-launcher.patch` on its launcher (this fork's `launcher/`
 already holds it). The GitHub workflow (`.github/workflows/lantern-nativeplus.yml`) copies the
 pinned Lantern's `engine/`, applies the patches, builds the engine, its settings tests and the
 launcher, checks the HDR shaders (against RenoDX's own code for the gamut bridge) and assembles
-the package with the official 0.9.38 runtime files (DLLs, models, shader catalogs). Pinned inputs:
+the package with the official 0.9.39 beta 23 runtime files (DLLs, models, shader catalogs). Pinned inputs:
 
-- LanternEngine `4715bca355059b7bd981ca849412884059d4d0a7` (0.9.38).
+- LanternEngine `be0810f349a4d49da9b87e71f980a124abdb5b74` (0.9.39 beta 23).
 - RenoDX `b6b32f47789ff9d0e640a0e0db6c9421b5397f34` (shader checks, and the source of the GLSL
   PsychoV-30).
 

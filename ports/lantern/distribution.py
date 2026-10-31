@@ -14,8 +14,8 @@ import urllib.request
 from zipfile import ZipFile
 
 BASE_URL = ('https://github.com/Awakenchan/LanternEngine/releases/download/'
-            'v0.9.38/LanternEngine-v0.9.38-win64.zip')
-BASE_SHA = 'dd8d3b54a263c5117bc79056fc956a12dd01054ae7d0c23bc81e3759dbfa98bd'
+            'v0.9.39-beta.23/LanternEngine-v0.9.39-beta.23-win64.zip')
+BASE_SHA = 'd2d659f35a3f7fc6ae5805b863c485cd71b3d75515c080b22b4c8fa3bb88b6bc'
 PYTHON_URL = 'https://www.python.org/ftp/python/3.12.10/python-3.12.10-embed-amd64.zip'
 PYTHON_SHA = '4acbed6dd1c744b0376e3b1cf57ce906f9dc9e95e68824584c8099a63025a3c3'
 
@@ -77,9 +77,9 @@ def assemble(engine, overlay, destination, cache):
     version = os.environ.get('BB_RELEASE_VERSION') or (Path(__file__).with_name('VERSION')
                                                         .read_text(encoding='utf-8').strip())
     (destination / 'package.json').write_text(json.dumps({
-        'version': version, 'engine': 'lantern-fps95-nativeplus-v3',
+        'version': version, 'engine': 'lantern-fps95-nativeplus-v4',
         'source': 'https://github.com/LRF17/LanternEngine-NativePlusHDR/tree/lantern-Native+HDR',
-        'runtime_resources': 'v0.9.38', 'python': '3.12.10',
+        'runtime_resources': 'v0.9.39-beta.23', 'python': '3.12.10',
     }, indent=2), encoding='utf-8')
     # Explicit shipped HDR defaults in the shipped settings (engine\lantern.default.ini, which the
     # launcher copies to lantern.ini when a folder has neither it nor an older bbport.ini), so no

@@ -6,10 +6,18 @@
 #include <optional>
 
 #include "bbport_copy.h"
+#include "engine/gx_objects.h"
 #include "bbport_sections.h"
 #include "bbport_toggles.h"
 #include "bbport_free_check.h"
 #include "engine/key_prompts.h"
+#include <zlib.h>
+#include <cstdlib>
+#include <cstring>
+#include <filesystem>
+#include <fstream>
+#include <iterator>
+#include <unordered_map>
 #include "common/assert.h"
 #include "common/debug.h"
 #include "common/div_ceil.h"
@@ -38,6 +46,9 @@ using Binding = TextureCache::BindingType;
 
 void TraceOverlap(const ImageInfo& requested, Binding binding, ImageId id, const Image* candidate,
                   std::string_view action, std::string_view reason, int mip = -1, int slice = -1) {
+    if (BbEngine::GxObjects::On()) {
+        BbEngine::GxObjects::NoteOverlap(action.data(), action.size());
+    }
     if (!ImageOverlapLogging()) {
         return;
     }
@@ -643,6 +654,192 @@ void TextureCache::InvalidateMemory(VAddr addr, size_t size) {
     });
 }
 
+namespace {
+struct UiEntry {
+    u32 width, height, size;
+};
+
+struct UiPack {
+    std::filesystem::path dir;
+    std::unordered_map<u64, UiEntry> keys;
+    std::unordered_map<u64, std::vector<u32>> sizes;
+};
+
+const UiPack& Pack() {
+    static const UiPack pack = [] {
+        UiPack p;
+        const char* dir = std::getenv("BB_UI_4K");
+        if (!dir || !*dir) return p;
+        std::error_code error;
+        p.dir = dir;
+        for (const auto& entry : std::filesystem::directory_iterator(p.dir, error)) {
+            const std::string name = entry.path().stem().string();
+            unsigned w = 0, h = 0, size = 0;
+            unsigned long long hash = 0;
+            if (entry.path().extension() != ".bbui" ||
+                std::sscanf(name.c_str(), "%ux%u_%u_%llx", &w, &h, &size, &hash) != 4 || !size) {
+                continue;
+            }
+            p.keys[hash] = {w, h, size};
+            auto& known = p.sizes[u64(w) << 32 | h];
+            if (std::find(known.begin(), known.end(), size) == known.end()) known.push_back(size);
+        }
+        std::printf("UI textures: %zu 4x replacements found in %s\n", p.keys.size(), dir);
+        return p;
+    }();
+    return pack;
+}
+
+constexpr u32 kUiLargestSide = 4096;
+constexpr u64 kUiBudget = 1024ull << 20;
+
+vk::Format UiFormat(vk::Format original) {
+    switch (original) {
+    case vk::Format::eBc1RgbaSrgbBlock:
+    case vk::Format::eBc1RgbSrgbBlock:
+    case vk::Format::eBc2SrgbBlock:
+    case vk::Format::eBc3SrgbBlock:
+    case vk::Format::eBc7SrgbBlock:
+    case vk::Format::eR8G8B8A8Srgb:
+    case vk::Format::eB8G8R8A8Srgb:
+        return vk::Format::eR8G8B8A8Srgb;
+    default:
+        return vk::Format::eR8G8B8A8Unorm;
+    }
+}
+
+bool ReadUiFile(const std::filesystem::path& path, std::vector<u8>& pixels, int& w, int& h) {
+    std::ifstream in(path, std::ios::binary);
+    const std::vector<u8> file{std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>()};
+    if (file.size() < 12 || std::memcmp(file.data(), "BBUI", 4) != 0) {
+        return false;
+    }
+    u32 fw = 0, fh = 0;
+    std::memcpy(&fw, file.data() + 4, 4);
+    std::memcpy(&fh, file.data() + 8, 4);
+    if (!fw || !fh || fw > 16384 || fh > 16384) {
+        return false;
+    }
+    pixels.resize(std::size_t(fw) * fh * 4);
+    uLongf size = uLongf(pixels.size());
+    if (uncompress(pixels.data(), &size, file.data() + 12, uLong(file.size() - 12)) != Z_OK || size != pixels.size()) {
+        return false;
+    }
+    w = int(fw);
+    h = int(fh);
+    return true;
+}
+
+void Halve(std::vector<u8>& pixels, int& w, int& h) {
+    const int nw = std::max(1, w / 2), nh = std::max(1, h / 2);
+    std::vector<u8> out(std::size_t(nw) * nh * 4);
+    for (int y = 0; y < nh; ++y)
+        for (int x = 0; x < nw; ++x)
+            for (int c = 0; c < 4; ++c) {
+                int sum = 0;
+                for (int dy = 0; dy < 2; ++dy)
+                    for (int dx = 0; dx < 2; ++dx)
+                        sum += pixels[(std::size_t(std::min(h - 1, y * 2 + dy)) * w + std::min(w - 1, x * 2 + dx)) * 4 + c];
+                out[(std::size_t(y) * nw + x) * 4 + c] = u8(sum / 4);
+            }
+    pixels.swap(out);
+    w = nw;
+    h = nh;
+}
+}
+
+void TextureCache::NoteUiTexture(Image& image) {
+    image.ui_key = 0;
+    const UiPack& pack = Pack();
+    const ImageInfo& info = image.info;
+    if (pack.keys.empty() || info.props.is_depth || info.resources.layers != 1 || info.size.depth != 1 ||
+        info.size.width < 16 || info.size.height < 16 || !info.guest_address || !info.guest_size) {
+        return;
+    }
+    const bool icon = info.guest_size == KeyPrompts::kIconBytes && info.size.width == 32;
+    const bool hud = info.guest_size == KeyPrompts::kHudBytes && info.size.width == 1024;
+    if (icon || hud) {
+        return;
+    }
+    const auto sizes = pack.sizes.find(u64(info.size.width) << 32 | info.size.height);
+    if (sizes == pack.sizes.end()) {
+        return;
+    }
+    const u8* guest = std::bit_cast<const u8*>(info.guest_address);
+    for (const u32 size : sizes->second) {
+        if (size > info.guest_size) {
+            continue;
+        }
+        const u64 hash = XXH3_64bits(guest, size);
+        const auto it = pack.keys.find(hash);
+        if (it != pack.keys.end() && it->second.width == info.size.width && it->second.height == info.size.height &&
+            it->second.size == size) {
+            image.ui_key = hash;
+            return;
+        }
+    }
+}
+
+Image* TextureCache::UiReplacement(const Image& image) {
+    if (!image.ui_key) {
+        return nullptr;
+    }
+    if (const auto it = ui_images.find(image.ui_key); it != ui_images.end()) {
+        return it->second.get();
+    }
+    if (ui_missing.count(image.ui_key) || ui_bytes >= kUiBudget) {
+        return nullptr;
+    }
+    const UiPack& pack = Pack();
+    const auto entry = pack.keys.find(image.ui_key);
+    if (entry == pack.keys.end()) {
+        return nullptr;
+    }
+    char name[96];
+    std::snprintf(name, sizeof name, "%ux%u_%u_%016llx.bbui", entry->second.width, entry->second.height, entry->second.size,
+                  static_cast<unsigned long long>(image.ui_key));
+    int w = 0, h = 0;
+    std::vector<u8> pixels;
+    if (!ReadUiFile(pack.dir / name, pixels, w, h)) {
+        ui_missing.insert(image.ui_key);
+        return nullptr;
+    }
+    while (u32(w) > kUiLargestSide || u32(h) > kUiLargestSide) {
+        Halve(pixels, w, h);
+    }
+    ImageInfo info{};
+    info.pixel_format = UiFormat(image.info.pixel_format);
+    info.type = AmdGpu::ImageType::Color2D;
+    info.size = {u32(w), u32(h), 1};
+    info.resources.levels = 1;
+    info.resources.layers = 1;
+    info.num_bits = 32;
+    info.pitch = u32(w);
+    info.mips_layout[0] = {u32(pixels.size()), u32(w), u32(h), 0};
+    auto replacement = std::make_unique<Image>(instance, runtime, slot_image_views, info);
+    scheduler.EndRendering();
+    auto& stream = buffer_cache.GetStreamBuffer();
+    const u64 offset = stream.Copy(pixels.data(), pixels.size(), 256);
+    const vk::BufferImageCopy copy{
+        .bufferOffset = offset,
+        .bufferRowLength = 0,
+        .bufferImageHeight = 0,
+        .imageSubresource = {vk::ImageAspectFlagBits::eColor, 0, 0, 1},
+        .imageOffset = {0, 0, 0},
+        .imageExtent = {u32(w), u32(h), 1},
+    };
+    runtime.UploadImage(replacement.get(), &stream, std::span{&copy, 1});
+    ui_bytes += pixels.size();
+    static int told = 0;
+    if (told++ < 8) {
+        std::printf("UI textures: %ux%u drawn from its %dx%d replacement (%llu MiB in use)\n", image.info.size.width,
+                    image.info.size.height, w, h, static_cast<unsigned long long>(ui_bytes >> 20));
+    }
+    Image* out = replacement.get();
+    ui_images.emplace(image.ui_key, std::move(replacement));
+    return out;
+}
+
 bool TextureCache::KeyPromptData(const Image& image, std::vector<u8>& data) {
     const ImageInfo& info = image.info;
     const bool icon = info.guest_size == KeyPrompts::kIconBytes && info.size.width == 32;
@@ -963,6 +1160,31 @@ ImageId TextureCache::FindImage(ImageDesc& desc, bool exact_fmt) {
     const auto& info = desc.info;
     ASSERT(info.guest_address != 0);
 
+    if (BbEngine::GxObjects::TexturesOwned() && desc.type <= BindingType::RenderTarget &&
+        info.num_samples == 1 && info.pixel_format != vk::Format::eUndefined) {
+        BbEngine::GxObjects::TextureExtent whole;
+        if (BbEngine::GxObjects::TextureAt(info.guest_address, &whole) &&
+            whole.width == info.size.width && whole.height == info.size.height &&
+            whole.levels <= info.mips_layout.size() && whole.levels >= info.resources.levels &&
+            whole.layers >= info.resources.layers &&
+            (whole.levels > info.resources.levels || whole.layers > info.resources.layers)) {
+            ImageInfo wide = info;
+            wide.resources.levels = whole.levels;
+            wide.resources.layers = whole.layers;
+            wide.UpdateSize();
+            const u32 before = info.mips_layout[0].size / std::max<u32>(info.resources.layers, 1);
+            const u32 after = wide.mips_layout[0].size / std::max<u32>(wide.resources.layers, 1);
+            if (before != after || wide.mips_layout[0].pitch != info.mips_layout[0].pitch) {
+                BbEngine::GxObjects::NoteWiden(BbEngine::GxObjects::WidenOtherLayout);
+            } else if (wide.guest_size > whole.room) {
+                BbEngine::GxObjects::NoteWiden(BbEngine::GxObjects::WidenTooLarge);
+            } else {
+                desc.info = wide;
+                BbEngine::GxObjects::NoteWiden(BbEngine::GxObjects::Widened);
+            }
+        }
+    }
+
     std::scoped_lock lock{mutex};
 
     u64 key_hash = info.guest_address ^ info.guest_size << 17 ^ u64(info.pixel_format) << 40 ^
@@ -1003,6 +1225,10 @@ ImageId TextureCache::FindImage(ImageDesc& desc, bool exact_fmt) {
         }
         if (cached.view_slice > 0) {
             desc.view_info.range.base.layer += cached.view_slice;
+        }
+        if (BbEngine::GxObjects::On()) {
+            BbEngine::GxObjects::NoteImage(info.guest_address, info.guest_size, ImageUid(cached.image_id), info.size.width, info.size.height,
+                                           static_cast<u32>(info.pixel_format));
         }
         return cached.image_id;
     }
@@ -1100,6 +1326,10 @@ ImageId TextureCache::FindImage(ImageDesc& desc, bool exact_fmt) {
         .view_mip = view_mip,
         .view_slice = view_slice,
     };
+    if (BbEngine::GxObjects::On()) {
+        BbEngine::GxObjects::NoteImage(info.guest_address, info.guest_size, ImageUid(image_id), info.size.width, info.size.height,
+                                       static_cast<u32>(info.pixel_format));
+    }
     return image_id;
 }
 
@@ -1362,6 +1592,7 @@ void TextureCache::RefreshImage(Image& image) {
 
     BB_SECTION(RefreshUpload);
     runtime.UploadImage(&image, buffer, image_copies);
+    NoteUiTexture(image);
 }
 
 vk::Sampler TextureCache::GetSampler(const AmdGpu::Sampler& sampler,

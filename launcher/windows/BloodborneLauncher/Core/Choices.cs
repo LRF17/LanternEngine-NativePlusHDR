@@ -8,15 +8,24 @@ namespace BloodborneLauncher.Core
     /// <summary>Every list the launcher offers, in English, with the values bbport expects.</summary>
     public static class Choices
     {
-        public static readonly Choice[] Upscalers =
-        {
-            new("FSR 4", "fsr4"),
-            new("FSR 4.1.1", "fsr411"),
-            new("FSR 3", "fsr3"),
-            new("DLSS (NVIDIA RTX)", "dlss"),
-            new(L.T("TAA (native anti-aliasing)"), "taa"),
-            new(L.T("Off"), "off"),
-        };
+        public static readonly Choice[] Upscalers = OperatingSystem.IsWindows()
+            ? new Choice[]
+            {
+                new("FSR", "fsr"),
+                new(L.T("FSR 4.1.1 (fsr4vk, experimental)"), "fsr411"),
+                new("DLSS (NVIDIA RTX)", "dlss"),
+                new(L.T("TAA (native anti-aliasing)"), "taa"),
+                new(L.T("Off"), "off"),
+            }
+            : new Choice[]
+            {
+                new("FSR 4", "fsr4"),
+                new("FSR 4.1.1", "fsr411"),
+                new("FSR 3", "fsr3"),
+                new("DLSS (NVIDIA RTX)", "dlss"),
+                new(L.T("TAA (native anti-aliasing)"), "taa"),
+                new(L.T("Off"), "off"),
+            };
 
         /// <summary>frame_gen in lantern.ini: generated frames between the game's own (the engine's
         /// vk_frame_generation.h; DLSS through NVIDIA Streamline, vk_streamline.h). Off by default.</summary>
@@ -266,7 +275,22 @@ namespace BloodborneLauncher.Core
 
         public static readonly Choice[] OnlineServers =
         {
-            new(L.T("The Hunter's Dream"), "huntersdream"),
+            new(L.T("The Hunter's Dream"), "huntersdream"), new("SuperMedo", SuperMedo.Id),
+        };
+
+        public static readonly Choice[] NamePlates =
+        {
+            new(L.T("Name only"), "name"), new(L.T("Role and name"), "role"),
+        };
+
+        public static readonly Choice[] SeamlessConnections =
+        {
+            new(L.T("Server"), "server"), new(L.T("Direct P2P"), "direct"),
+        };
+
+        public static readonly Choice[] SeamlessRoles =
+        {
+            new(L.T("Join"), "guest"), new(L.T("Host"), "host"),
         };
 
         public static readonly Choice[] SignTimeout =

@@ -1140,10 +1140,10 @@ index 0000000..668262d
 +        *includes, cpp, here / 'main.cpp', '-o', work / 'check')
 +    run(work / 'check')
 diff --git a/gpu/CMakeLists.txt b/gpu/CMakeLists.txt
-index 6e7e4b8..9f040e8 100644
+index 8bc6834..1941d74 100644
 --- a/gpu/CMakeLists.txt
 +++ b/gpu/CMakeLists.txt
-@@ -154,6 +154,22 @@ function(add_host_shader FILENAME SHADER_NAME)
+@@ -155,6 +155,22 @@ function(add_host_shader FILENAME SHADER_NAME)
          DEPENDS ${SHADER_SRC}/${FILENAME} VERBATIM)
      set(SHADER_HEADERS ${SHADER_HEADERS} ${OUT} PARENT_SCOPE)
  endfunction()
@@ -6526,7 +6526,7 @@ index 634a9cd..706ca6c 100644
      return s.hdr_output.load(std::memory_order_relaxed) != BbSettings::HdrOutputOff &&
             s.hdr_mode.load(std::memory_order_relaxed) == BbSettings::HdrModeNative;
 diff --git a/gpu/shadps4/video_core/renderer_vulkan/vk_pipeline_cache.cpp b/gpu/shadps4/video_core/renderer_vulkan/vk_pipeline_cache.cpp
-index fa0f226..e83b221 100644
+index e111563..080f5d8 100644
 --- a/gpu/shadps4/video_core/renderer_vulkan/vk_pipeline_cache.cpp
 +++ b/gpu/shadps4/video_core/renderer_vulkan/vk_pipeline_cache.cpp
 @@ -11,6 +11,8 @@
@@ -6538,7 +6538,7 @@ index fa0f226..e83b221 100644
  #include "common/elf_info.h"
  #include "common/io_file.h"
  #include "common/path_util.h"
-@@ -56,6 +58,7 @@ DriverCache::Identity DriverIdentity(const Instance& instance) {
+@@ -57,6 +59,7 @@ DriverCache::Identity DriverIdentity(const Instance& instance) {
  }
  
  std::filesystem::path DriverCachePath() {
@@ -6546,7 +6546,7 @@ index fa0f226..e83b221 100644
      return Common::FS::GetUserPath(Common::FS::PathType::CacheDir) /
             (std::string{Common::ElfInfo::Instance().GameSerial()} + ".vkcache");
  }
-@@ -392,6 +395,9 @@ PipelineCache::PipelineCache(const Instance& instance_, Scheduler& scheduler_,
+@@ -393,6 +396,9 @@ PipelineCache::PipelineCache(const Instance& instance_, Scheduler& scheduler_,
                               AmdGpu::Liverpool* liverpool_, u32 sparse_page_shift)
      : instance{instance_}, scheduler{scheduler_}, liverpool{liverpool_},
        desc_heap{instance, scheduler.GetWorkSemaphore(), DescriptorHeapSizes} {
@@ -6556,7 +6556,7 @@ index fa0f226..e83b221 100644
      sel.regs = &liverpool->regs;
      const auto& vk12_props = instance.GetVk12Properties();
      profile = Shader::Profile{
-@@ -458,6 +464,8 @@ PipelineCache::PipelineCache(const Instance& instance_, Scheduler& scheduler_,
+@@ -459,6 +465,8 @@ PipelineCache::PipelineCache(const Instance& instance_, Scheduler& scheduler_,
          // bbport: native shaders, on unless BB_NATIVE_SHADERS=0 (the launcher's "Legacy shader
          // compiler"). Uniform buffers need the per-buffer offset in the push data (a 64-byte
          // uniform alignment can leave a remainder) and the 64 KiB range the shaders declare.
@@ -6565,7 +6565,7 @@ index fa0f226..e83b221 100644
          .uniform_constant_buffers =
              [] {
                  const char* env = std::getenv("BB_NATIVE_SHADERS");
-@@ -481,6 +489,17 @@ PipelineCache::PipelineCache(const Instance& instance_, Scheduler& scheduler_,
+@@ -482,6 +490,17 @@ PipelineCache::PipelineCache(const Instance& instance_, Scheduler& scheduler_,
          const char* env = std::getenv("BB_UBO_EXACT");
          return env && env[0] == '1';
      }();
@@ -6583,7 +6583,7 @@ index fa0f226..e83b221 100644
      // Opt-in: measured slower at the test spot (Profile::early_fragment_tests).
      profile.early_fragment_tests = [] {
          const char* env = std::getenv("BB_EARLY_Z");
-@@ -510,7 +529,8 @@ PipelineCache::PipelineCache(const Instance& instance_, Scheduler& scheduler_,
+@@ -511,7 +530,8 @@ PipelineCache::PipelineCache(const Instance& instance_, Scheduler& scheduler_,
      profile.flatbuf_storage = profile.uniform_constant_buffers && !switch_on("BB_UBO_FLATBUF");
      // bbport: pixel shader arithmetic the driver may fuse; BB_FS_CONTRACT=0 keeps it unfused.
      profile.fragment_exact_fp = !switch_on("BB_FS_CONTRACT");
@@ -6593,7 +6593,7 @@ index fa0f226..e83b221 100644
      profile.manual_interpolation_all = profile.needs_manual_interpolation && !switch_on("BB_INTERP_HW");
      if (profile.uniform_constant_buffers) {
          std::printf("Native shaders: constant buffers as uniform buffers (BB_NATIVE_SHADERS=0: "
-@@ -723,6 +743,16 @@ bool PipelineCache::RefreshGraphicsKey(PipelineSelection& sel) {
+@@ -724,6 +744,16 @@ bool PipelineCache::RefreshGraphicsKey(PipelineSelection& sel) {
          color_buffer.data_format = col_buf.GetDataFmt();
          color_buffer.num_format = col_buf.GetNumberFmt();
          color_buffer.num_conversion = col_buf.GetNumberConversion();
@@ -6610,8 +6610,8 @@ index fa0f226..e83b221 100644
          color_buffer.export_format = regs.color_export_format.GetFormat(cb);
          color_buffer.swizzle = col_buf.Swizzle();
  
-@@ -995,6 +1025,19 @@ vk::ShaderModule PipelineCache::CompileModule(Shader::Info& info, Shader::Runtim
-     auto spv = Shader::Backend::SPIRV::EmitSPIRV(profile, runtime_info, ir_program, binding);
+@@ -1005,6 +1035,19 @@ vk::ShaderModule PipelineCache::CompileModule(Shader::Info& info, Shader::Runtim
+     }
      DumpShader(spv, info.pgm_hash, info.hw_stage, perm_idx, "spv");
  
 +    // Build composite variants from the original interface, then replace only chain passes. The
@@ -6630,7 +6630,7 @@ index fa0f226..e83b221 100644
      vk::ShaderModule module;
  
      auto patch = GetShaderPatch(info.pgm_hash, info.hw_stage, perm_idx, "spv");
-@@ -1006,7 +1049,8 @@ vk::ShaderModule PipelineCache::CompileModule(Shader::Info& info, Shader::Runtim
+@@ -1016,7 +1059,8 @@ vk::ShaderModule PipelineCache::CompileModule(Shader::Info& info, Shader::Runtim
          module = CompileSPV(spv, instance.GetDevice());
      }
  
@@ -6687,7 +6687,7 @@ index 97087c8..6aeffc7 100644
      vk::ShaderModule module;
      if (perm_idx < target->modules.size() && target->modules[perm_idx].module) {
 diff --git a/gpu/shadps4/video_core/renderer_vulkan/vk_presenter.cpp b/gpu/shadps4/video_core/renderer_vulkan/vk_presenter.cpp
-index 96efc90..88505ab 100644
+index a993fd4..bbf13b8 100644
 --- a/gpu/shadps4/video_core/renderer_vulkan/vk_presenter.cpp
 +++ b/gpu/shadps4/video_core/renderer_vulkan/vk_presenter.cpp
 @@ -1,3 +1,4 @@
@@ -6695,15 +6695,15 @@ index 96efc90..88505ab 100644
  // SPDX-FileCopyrightText: Copyright 2024-2026 shadPS4 Emulator Project
  // SPDX-License-Identifier: GPL-2.0-or-later
  
-@@ -16,6 +17,7 @@
- #include "bbport_settings.h"
+@@ -17,6 +18,7 @@
  #include "bbport_timeline.h"
+ #include "face_shot.h"
  #include "video_core/renderer_vulkan/vk_temporal_upscaler.h"
 +#include "video_core/renderer_vulkan/vk_gpu_profiler.h"
  #include "video_core/renderer_vulkan/vk_presenter.h"
  #include "video_core/renderer_vulkan/vk_rasterizer.h"
  #include "video_core/texture_cache/image.h"
-@@ -45,6 +47,74 @@
+@@ -46,6 +48,74 @@
  
  namespace Vulkan {
  
@@ -6778,7 +6778,66 @@ index 96efc90..88505ab 100644
  bool CanBlitToSwapchain(const vk::PhysicalDevice physical_device, vk::Format format) {
      const vk::FormatProperties props{physical_device.getFormatProperties(format)};
      return static_cast<bool>(props.optimalTilingFeatures & vk::FormatFeatureFlagBits::eBlitDst);
-@@ -172,7 +242,7 @@ Presenter::Presenter(Frontend::WindowSDL& window_, AmdGpu::Liverpool* liverpool_
+@@ -129,12 +199,29 @@ static vk::Rect2D FitImage(s32 frame_width, s32 frame_height, s32 swapchain_widt
+ 
+ // bbport: screenshot capture and ImGui overlays removed; the port presents directly.
+ 
++// Native+: a half float of the RGBA16F frame, clamped to 0..1 as an 8-bit channel.
++static std::uint8_t FaceHalfToByte(std::uint16_t h) {
++    const u32 exponent = (h >> 10) & 0x1F, mantissa = h & 0x3FF;
++    float value = exponent == 0 ? std::ldexp(float(mantissa), -24)
++                                : exponent == 31 ? 1.0f : std::ldexp(float(mantissa | 0x400), int(exponent) - 25);
++    if (h & 0x8000) value = 0.0f;
++    return std::uint8_t(std::lround(std::clamp(value, 0.0f, 1.0f) * 255.0f));
++}
++
+ static void GrabFace(const Instance& instance, Scheduler& scheduler, vk::Image image, u32 width, u32 height,
+                      vk::Format format) {
+     float rect[4];
+     if (!BbFaceShot::Due(rect) || !width || !height) {
+         return;
+     }
++    // Native+ presents an RGBA16F frame (8 bytes a texel): read as such, then made 8-bit RGBA.
++    // Any other format than 8-bit RGBA/BGRA is skipped, so the copy never outgrows the buffer.
++    const bool half = format == vk::Format::eR16G16B16A16Sfloat;
++    if (!half && format != vk::Format::eR8G8B8A8Unorm && format != vk::Format::eR8G8B8A8Srgb &&
++        format != vk::Format::eB8G8R8A8Unorm && format != vk::Format::eB8G8R8A8Srgb) {
++        return;
++    }
++    const u32 texel = half ? 8 : 4;
+     const u32 x = u32(rect[0] * float(width)), y = u32(rect[1] * float(height));
+     const u32 w = std::min(width - x, u32((rect[2] - rect[0]) * float(width)));
+     const u32 h = std::min(height - y, u32((rect[3] - rect[1]) * float(height)));
+@@ -143,7 +230,7 @@ static void GrabFace(const Instance& instance, Scheduler& scheduler, vk::Image i
+     }
+     const VkBufferCreateInfo buffer_ci{
+         .sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
+-        .size = VkDeviceSize(w) * h * 4,
++        .size = VkDeviceSize(w) * h * texel,
+         .usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+     };
+     const VmaAllocationCreateInfo alloc_ci{
+@@ -179,9 +266,17 @@ static void GrabFace(const Instance& instance, Scheduler& scheduler, vk::Image i
+     };
+     cmdbuf.pipelineBarrier2({.memoryBarrierCount = 1, .pMemoryBarriers = &after});
+     const bool bgra = format == vk::Format::eB8G8R8A8Unorm || format == vk::Format::eB8G8R8A8Srgb;
+-    scheduler.DeferPriorityOperation([allocator = instance.GetAllocator(), buffer, allocation, info, w, h, bgra] {
++    scheduler.DeferPriorityOperation([allocator = instance.GetAllocator(), buffer, allocation, info, w, h, bgra, half] {
+         vmaInvalidateAllocation(allocator, allocation, 0, VK_WHOLE_SIZE);
+-        BbFaceShot::Deliver(static_cast<const std::uint8_t*>(info.pMappedData), w, h, w * 4, bgra);
++        const auto* pixels = static_cast<const std::uint8_t*>(info.pMappedData);
++        std::vector<std::uint8_t> bytes;
++        if (half) {
++            const auto* halves = static_cast<const std::uint16_t*>(info.pMappedData);
++            bytes.resize(std::size_t(w) * h * 4);
++            for (std::size_t i = 0; i < bytes.size(); ++i) bytes[i] = FaceHalfToByte(halves[i]);
++            pixels = bytes.data();
++        }
++        BbFaceShot::Deliver(pixels, w, h, w * 4, bgra);
+         vmaDestroyBuffer(allocator, buffer, allocation);
+     });
+ }
+@@ -230,7 +325,7 @@ Presenter::Presenter(Frontend::WindowSDL& window_, AmdGpu::Liverpool* liverpool_
          static_cast<float>(EmulatorSettings.GetRcasAttenuation() / 1000.f);
  
      fsr_pass.Create(device, instance.GetAllocator(), num_images);
@@ -6787,7 +6846,7 @@ index 96efc90..88505ab 100644
      // bbport: + 2: frame generation presents up to twice per game frame, and adds a swapchain
      // image; the menu's vertex buffers rotate over this many.
      BbOverlay::Init(instance, swapchain.GetSurfaceFormat().format, num_images + 2);
-@@ -291,7 +361,11 @@ void Presenter::CreateHdrTarget(HdrTarget& target, vk::Extent2D extent, const ch
+@@ -349,7 +444,11 @@ void Presenter::CreateHdrTarget(HdrTarget& target, vk::Extent2D extent, const ch
      const bool sdr = format == vk::Format::eUndefined;
      const vk::ImageCreateInfo image_info = {
          .imageType = vk::ImageType::e2D,
@@ -6800,7 +6859,7 @@ index 96efc90..88505ab 100644
          .extent = {extent.width, extent.height, 1},
          .mipLevels = 1,
          .arrayLayers = 1,
-@@ -362,7 +436,9 @@ void Presenter::EnsureDlssHdrTargets(vk::Extent2D extent) {
+@@ -420,7 +519,9 @@ void Presenter::EnsureDlssHdrTargets(vk::Extent2D extent) {
                  DestroyHdrTarget(hudless);
              });
      }
@@ -6811,7 +6870,7 @@ index 96efc90..88505ab 100644
      CreateHdrTarget(dlss_hdr_hudless, extent, "DLSS-G HUD-less", swapchain.GetHdrFormat().format);
      dlss_hdr_extent = extent;
  }
-@@ -474,7 +550,10 @@ void Presenter::PresentHdr(vk::CommandBuffer cmdbuf, Frame* frame, vk::Extent2D
+@@ -532,7 +633,10 @@ void Presenter::PresentHdr(vk::CommandBuffer cmdbuf, Frame* frame, vk::Extent2D
      // real frame's it was interpolated towards (PresentGenerated), or every other frame would
      // fall back to plain SDR.
      const Frame* gain = hdr_gain_source ? hdr_gain_source : frame;
@@ -6823,7 +6882,7 @@ index 96efc90..88505ab 100644
      LogHdrState(scrgb, mode, native);
      // BB_HDR_DEBUG=1: the gain as a heat map over a grey picture (hdr_output.frag).
      static const bool debug = [] {
-@@ -488,30 +567,45 @@ void Presenter::PresentHdr(vk::CommandBuffer cmdbuf, Frame* frame, vk::Extent2D
+@@ -546,30 +650,45 @@ void Presenter::PresentHdr(vk::CommandBuffer cmdbuf, Frame* frame, vk::Extent2D
          .paper_white = std::clamp(settings.hdr_paper_white.load(), BbSettings::HdrPaperWhiteMin,
                                    BbSettings::HdrPaperWhiteMax),
          .peak = BbSettings::HdrPeakNits(settings),
@@ -6876,7 +6935,7 @@ index 96efc90..88505ab 100644
                                     ? hdr.peak
                                     : std::min(hdr.peak, hdr.paper_white * expand_white);
      swapchain.SetHdrMetadata(hdr.peak, content_peak, hdr.paper_white);
-@@ -527,7 +621,7 @@ void Presenter::PresentHdr(vk::CommandBuffer cmdbuf, Frame* frame, vk::Extent2D
+@@ -585,7 +704,7 @@ void Presenter::PresentHdr(vk::CommandBuffer cmdbuf, Frame* frame, vk::Extent2D
      hdr_pass.Render(cmdbuf, hdr_game.view, overlay ? hdr_overlay.view : hdr_game.view,
                      native ? *gain->hdr_gain->view : hdr_game.view,
                      native ? Layout::eGeneral : Layout::eShaderReadOnlyOptimal,
@@ -6885,7 +6944,7 @@ index 96efc90..88505ab 100644
  
      const std::array to_present{
          barrier(swapchain_image, Layout::eColorAttachmentOptimal, Layout::ePresentSrcKHR,
-@@ -575,7 +669,9 @@ void Presenter::PresentHdr(vk::CommandBuffer cmdbuf, Frame* frame, vk::Extent2D
+@@ -633,7 +752,9 @@ void Presenter::PresentHdr(vk::CommandBuffer cmdbuf, Frame* frame, vk::Extent2D
      };
      barriers(to_encode);
      auto hudless_hdr = hdr;
@@ -6896,7 +6955,7 @@ index 96efc90..88505ab 100644
      hdr_pass.Render(cmdbuf, dlss_hdr_composite.view, dlss_hdr_composite.view,
                      native ? *frame->hdr_gain->view : dlss_hdr_composite.view,
                      native ? Layout::eGeneral : Layout::eShaderReadOnlyOptimal,
-@@ -597,7 +693,9 @@ void Presenter::LogHdrState(bool scrgb, int mode, bool native_frame) {
+@@ -655,7 +776,9 @@ void Presenter::LogHdrState(bool scrgb, int mode, bool native_frame) {
          hdr_native_state = hdr_logged_native = -1;
          std::printf("HDR output: %s, mode %s (%s)\n",
                      scrgb ? "scRGB (FP16)" : "HDR10 (PQ, BT.2020)", BbSettings::HdrModeNames[mode],
@@ -6907,7 +6966,7 @@ index 96efc90..88505ab 100644
                          ? "highlights from the game's HDR scene, plain SDR where a frame has none"
                          : "highlights expanded from the SDR picture");
      }
-@@ -639,7 +737,7 @@ void Presenter::RecreateFrame(Frame* frame, u32 width, u32 height) {
+@@ -697,7 +820,7 @@ void Presenter::RecreateFrame(Frame* frame, u32 width, u32 height) {
          vmaDestroyImage(instance.GetAllocator(), frame->image, frame->allocation);
      }
  
@@ -6916,7 +6975,7 @@ index 96efc90..88505ab 100644
      const vk::ImageCreateInfo image_info = {
          .flags = vk::ImageCreateFlagBits::eMutableFormat,
          .imageType = vk::ImageType::e2D,
-@@ -775,6 +873,7 @@ Frame* Presenter::PrepareFrame(const Libraries::VideoOut::BufferAttributeGroup&
+@@ -833,6 +956,7 @@ Frame* Presenter::PrepareFrame(const Libraries::VideoOut::BufferAttributeGroup&
      // bbport: scaled upscaler presets: the output-size display buffer drawn by the port.
      TemporalUpscaler::Display display{};
      const bool upscaled = rasterizer->GetUpscaler().DisplayOverride(cpu_address, display);
@@ -6924,7 +6983,7 @@ index 96efc90..88505ab 100644
      VideoCore::ImageId image_id{};
      if (!upscaled) {
          auto desc = VideoCore::TextureCache::ImageDesc{attribute, cpu_address};
-@@ -783,6 +882,13 @@ Frame* Presenter::PrepareFrame(const Libraries::VideoOut::BufferAttributeGroup&
+@@ -841,6 +965,13 @@ Frame* Presenter::PrepareFrame(const Libraries::VideoOut::BufferAttributeGroup&
      }
  
      Frame* frame = GetRenderFrame();
@@ -6938,7 +6997,7 @@ index 96efc90..88505ab 100644
      // bbport: native HDR output: the gain map made at this display buffer's display pass (for
      // the frame it holds, a frame earlier in the command stream) goes with the frame to the
      // present thread; the frame's old one, presented (its fence was waited above), goes back.
-@@ -813,9 +919,15 @@ Frame* Presenter::PrepareFrame(const Libraries::VideoOut::BufferAttributeGroup&
+@@ -871,9 +1002,15 @@ Frame* Presenter::PrepareFrame(const Libraries::VideoOut::BufferAttributeGroup&
          image_view = Check(device.createImageView({
              .image = display.image,
              .viewType = vk::ImageViewType::e2D,
@@ -6957,7 +7016,7 @@ index 96efc90..88505ab 100644
              .subresourceRange = {vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1},
          }));
          draw_scheduler.DeferOperation([device, image_view] { device.destroyImageView(image_view); });
-@@ -857,15 +969,18 @@ Frame* Presenter::PrepareFrame(const Libraries::VideoOut::BufferAttributeGroup&
+@@ -922,15 +1059,18 @@ Frame* Presenter::PrepareFrame(const Libraries::VideoOut::BufferAttributeGroup&
      pp_settings.srgb_input =
          attribute.attrib.pixel_format == Libraries::VideoOut::PixelFormat::A2R10G10B10Srgb;
  
@@ -6977,7 +7036,7 @@ index 96efc90..88505ab 100644
          gen_job = frame_gen->Prepare(image_size, view_info.format, hdr, fsr_settings.enable,
                                       draw_scheduler.CurrentTick());
          if (gen_job && gen_job->present) {
-@@ -913,6 +1028,9 @@ Frame* Presenter::PrepareFrame(const Libraries::VideoOut::BufferAttributeGroup&
+@@ -978,6 +1118,9 @@ Frame* Presenter::PrepareFrame(const Libraries::VideoOut::BufferAttributeGroup&
      const bool crumbs = Breadcrumbs::Enabled();
      const u32 fsr_crumb = crumbs ? Breadcrumbs::Note(stream, {.name = "presenter FSR"}) : 0;
      const u32 pp_crumb = crumbs ? Breadcrumbs::Note(stream, {.name = "presenter post process"}) : 0;
@@ -6987,7 +7046,7 @@ index 96efc90..88505ab 100644
      draw_scheduler.Record([this, frame, image_view, image_size, frame_subresources, stream,
                             fsr_crumb, pp_crumb, fsr = fsr_settings, pp = pp_settings, generated,
                             gen_job, dlss_hudless, dlss_srgb, dlss = dlss_fg.get(),
-@@ -938,7 +1056,7 @@ Frame* Presenter::PrepareFrame(const Libraries::VideoOut::BufferAttributeGroup&
+@@ -1003,7 +1146,7 @@ Frame* Presenter::PrepareFrame(const Libraries::VideoOut::BufferAttributeGroup&
          }
          const vk::ImageView input = fsr_pass.Render(cmdbuf, image_view, image_size,
                                                      {frame->width, frame->height}, fsr,
@@ -6996,7 +7055,7 @@ index 96efc90..88505ab 100644
          if (fsr_crumb) {
              Breadcrumbs::Mark(cmdbuf, stream, fsr_crumb, true);
              Breadcrumbs::Mark(cmdbuf, stream, pp_crumb, false);
-@@ -1013,6 +1131,13 @@ Frame* Presenter::PrepareFrame(const Libraries::VideoOut::BufferAttributeGroup&
+@@ -1078,6 +1221,13 @@ Frame* Presenter::PrepareFrame(const Libraries::VideoOut::BufferAttributeGroup&
          generated->ready_semaphore = frame->ready_semaphore;
          generated->ready_tick = frame->ready_tick;
          generated->hdr_native = false;
@@ -7010,7 +7069,7 @@ index 96efc90..88505ab 100644
          frame->generated = generated;
      }
      SubmitInfo info{};
-@@ -1223,6 +1348,7 @@ void Presenter::Present(Frame* frame, bool is_reusing_frame, bool is_game_frame)
+@@ -1288,6 +1438,7 @@ void Presenter::Present(Frame* frame, bool is_reusing_frame, bool is_game_frame)
      const vk::Image swapchain_image = swapchain.Image();
      auto& scheduler = present_scheduler;
      const auto cmdbuf = scheduler.CommandBuffer();
@@ -7018,7 +7077,7 @@ index 96efc90..88505ab 100644
      DumpFinalFrameIfDue(instance, scheduler, cmdbuf, frame->image, frame->width, frame->height,
                          swapchain.GetSurfaceFormat().format);
  
-@@ -1365,6 +1491,7 @@ void Presenter::Present(Frame* frame, bool is_reusing_frame, bool is_game_frame)
+@@ -1430,6 +1581,7 @@ void Presenter::Present(Frame* frame, bool is_reusing_frame, bool is_game_frame)
      if (EmulatorSettings.IsVkHostMarkersEnabled()) {
          cmdbuf.endDebugUtilsLabelEXT();
      }
@@ -7041,7 +7100,7 @@ index e619502..c18d0ee 100644
  
  enum SchedulerType {
 diff --git a/gpu/shadps4/video_core/renderer_vulkan/vk_rasterizer.cpp b/gpu/shadps4/video_core/renderer_vulkan/vk_rasterizer.cpp
-index 265de16..5d68071 100644
+index fcf60c4..4a08693 100644
 --- a/gpu/shadps4/video_core/renderer_vulkan/vk_rasterizer.cpp
 +++ b/gpu/shadps4/video_core/renderer_vulkan/vk_rasterizer.cpp
 @@ -1,3 +1,4 @@
@@ -7049,15 +7108,15 @@ index 265de16..5d68071 100644
  // SPDX-FileCopyrightText: Copyright 2024-2026 shadPS4 Emulator Project
  // SPDX-License-Identifier: GPL-2.0-or-later
  
-@@ -6,6 +7,7 @@
- #endif
+@@ -7,6 +8,7 @@
  #include "bbport_platform.h"
+ #include "engine/gx_trace.h"
  #include <bit>
 +#include <cmath>
  #include <map>
  #include <thread>
  #include <unordered_set>
-@@ -73,6 +75,9 @@ Rasterizer::Rasterizer(const Instance& instance_, Scheduler& scheduler_, Runtime
+@@ -74,6 +76,9 @@ Rasterizer::Rasterizer(const Instance& instance_, Scheduler& scheduler_, Runtime
        guest_markers_enabled{EmulatorSettings.IsVkGuestMarkersEnabled()} {
      // Before the rasterizer is bound: Liverpool enqueues buffers only once it sees it.
      draw_prep = std::make_unique<DrawPreparation>(pipeline_cache);
@@ -7067,7 +7126,7 @@ index 265de16..5d68071 100644
      scene_targets = std::make_unique<SceneTargets>(instance, scheduler, runtime, texture_cache);
      // Allocation is independent of shader compilation, including constructor-time precache.
      object_motion = std::make_unique<ObjectMotion>(instance, scheduler);
-@@ -1891,6 +1896,11 @@ void Rasterizer::DrawRecord(const GraphicsPipeline* pipeline, const PreparedDraw
+@@ -1959,6 +1964,11 @@ void Rasterizer::DrawRecord(const GraphicsPipeline* pipeline, const PreparedDraw
          FrameCapture::Poll();
          scheduler.PopPendingOperations();
      }
@@ -7079,7 +7138,7 @@ index 265de16..5d68071 100644
      // bbport: under SET_PREDICATION on a block known to read occluded (vk_occlusion.h).
      if (occlusion && occlusion->SkipDraw()) {
          return;
-@@ -1900,6 +1910,7 @@ void Rasterizer::DrawRecord(const GraphicsPipeline* pipeline, const PreparedDraw
+@@ -1968,6 +1978,7 @@ void Rasterizer::DrawRecord(const GraphicsPipeline* pipeline, const PreparedDraw
      if (const u32 frame = BbStats::frame_number.load(std::memory_order_relaxed);
          frame != preupload_frame) {
          preupload_frame = frame;
@@ -7087,7 +7146,7 @@ index 265de16..5d68071 100644
          BB_SECTION(Preupload);
          static const u64 budget = [] {
              const char* env = std::getenv("BB_PREUPLOAD_MB");
-@@ -2061,6 +2072,24 @@ void Rasterizer::DrawRecord(const GraphicsPipeline* pipeline, const PreparedDraw
+@@ -2129,6 +2140,24 @@ void Rasterizer::DrawRecord(const GraphicsPipeline* pipeline, const PreparedDraw
              });
          }
      }
@@ -7112,7 +7171,7 @@ index 265de16..5d68071 100644
      pipeline->BindResources(set_writes, push_data, {image_infos.data(), image_infos.size()},
                              {buffer_infos.data(), buffer_infos.size()});
      if (pipeline->GetGraphicsKey().motion_vectors) {
-@@ -2126,6 +2155,85 @@ void Rasterizer::DrawRecord(const GraphicsPipeline* pipeline, const PreparedDraw
+@@ -2194,6 +2223,85 @@ void Rasterizer::DrawRecord(const GraphicsPipeline* pipeline, const PreparedDraw
              cmdbuf.endQuery(query.pool, query.index);
          }
      });
@@ -7198,7 +7257,7 @@ index 265de16..5d68071 100644
      if (FrameCapture::Active()) {
          const auto* ps = pipeline->GetStages()[u32(Shader::SwStage::Fragment)];
          FrameCapture::Draw(vs_info.pgm_hash, ps ? ps->pgm_hash : 0, num_indices, num_instances);
-@@ -3318,6 +3426,32 @@ bool Rasterizer::IsComputeImageCopy(const Pipeline* pipeline) {
+@@ -3386,6 +3494,32 @@ bool Rasterizer::IsComputeImageCopy(const Pipeline* pipeline) {
      // Perform image copy
      VideoCore::Image& src_image = desc0.is_written ? image1 : image0;
      VideoCore::Image& dst_image = desc0.is_written ? image0 : image1;
@@ -7231,7 +7290,7 @@ index 265de16..5d68071 100644
      runtime.CopyColorAndDepth(&src_image, &dst_image);
      return true;
  }
-@@ -4260,6 +4394,9 @@ vk::Sampler Rasterizer::CachedSampler(const AmdGpu::Sampler& sharp, bool is_dept
+@@ -4344,6 +4478,9 @@ vk::Sampler Rasterizer::CachedSampler(const AmdGpu::Sampler& sharp, bool is_dept
  // The sampler that reads each image is not known here: any point sampler counts.
  // BB_PROXY_POINT_NATIVE=0 (or experiment bit 0): proxies are read regardless, as before.
  bool Rasterizer::PointReadsNative(const Shader::Info& stage, const PreparedStage* prepared) const {
@@ -7241,7 +7300,7 @@ index 265de16..5d68071 100644
      static const bool enabled = [] {
          const char* env = std::getenv("BB_PROXY_POINT_NATIVE");
          return !(env && env[0] == '0');
-@@ -4748,6 +4885,35 @@ RenderState Rasterizer::BeginRenderingFull(const GraphicsPipeline* pipeline) {
+@@ -4832,6 +4969,35 @@ RenderState Rasterizer::BeginRenderingFull(const GraphicsPipeline* pipeline) {
                            !same_size(texture_cache.GetImage(db_desc.first), 0))) {
          reduced = false;
      }
@@ -7277,7 +7336,7 @@ index 265de16..5d68071 100644
      if (debug_pass) {
          if (db_desc.first) {
              const auto& depth = texture_cache.GetImage(db_desc.first);
-@@ -4757,7 +4923,7 @@ RenderState Rasterizer::BeginRenderingFull(const GraphicsPipeline* pipeline) {
+@@ -4841,7 +5007,7 @@ RenderState Rasterizer::BeginRenderingFull(const GraphicsPipeline* pipeline) {
          }
          std::printf("Scene pass: reduced %d %s\n", reduced, why.c_str());
      }
@@ -7286,7 +7345,7 @@ index 265de16..5d68071 100644
      if (BbStats::enabled) {
          BbStats::reduced_draws.fetch_add(reduced, std::memory_order_relaxed);
          BbStats::scene_draws.fetch_add(scene_started, std::memory_order_relaxed);
-@@ -4973,13 +5139,13 @@ RenderState Rasterizer::BeginRenderingFull(const GraphicsPipeline* pipeline) {
+@@ -5057,13 +5223,13 @@ RenderState Rasterizer::BeginRenderingFull(const GraphicsPipeline* pipeline) {
          state.num_layers = 1;
      }
  
@@ -7302,7 +7361,7 @@ index 265de16..5d68071 100644
          ui_pass.active = false; // the memo keeps this scale for the pass
      }
      if (FrameCapture::Active()) {
-@@ -5005,8 +5171,18 @@ void Rasterizer::Resolve() {
+@@ -5089,8 +5255,18 @@ void Rasterizer::Resolve() {
      const auto& mrt1_hint = CbExtent(1);
      VideoCore::TextureCache::ImageDesc mrt0_desc{Regs().color_buffers[0], mrt0_hint};
      VideoCore::TextureCache::ImageDesc mrt1_desc{Regs().color_buffers[1], mrt1_hint};
@@ -7323,7 +7382,7 @@ index 265de16..5d68071 100644
  
      ScopeMarkerBegin(fmt::format("Resolve:MRT0={:#x}:MRT1={:#x}",
                                   Regs().color_buffers[0].Address(),
-@@ -5601,7 +5777,12 @@ void Rasterizer::UpdateRasterizationState() const {
+@@ -5685,7 +5861,12 @@ void Rasterizer::UpdateRasterizationState() const {
  void Rasterizer::UpdateColorBlendingState(const GraphicsPipeline* pipeline) const {
      const auto& regs = Regs();
      auto& dynamic_state = scheduler.GetDynamicState();
@@ -7337,7 +7396,7 @@ index 265de16..5d68071 100644
      dynamic_state.SetColorWriteMasks(pipeline->GetGraphicsKey().write_masks);
      dynamic_state.SetAttachmentFeedbackLoopEnabled(attachment_feedback_loop);
  }
-@@ -5720,6 +5901,193 @@ void Rasterizer::ReportUboStats() {
+@@ -5804,6 +5985,193 @@ void Rasterizer::ReportUboStats() {
      frames = 0;
  }
  
@@ -7532,7 +7591,7 @@ index 265de16..5d68071 100644
      if (auto* profiler = GpuProfiler::Get()) {
          profiler->BeginFrame();
 diff --git a/gpu/shadps4/video_core/renderer_vulkan/vk_rasterizer.h b/gpu/shadps4/video_core/renderer_vulkan/vk_rasterizer.h
-index f839674..7f4daef 100644
+index 832e086..cfdbf3b 100644
 --- a/gpu/shadps4/video_core/renderer_vulkan/vk_rasterizer.h
 +++ b/gpu/shadps4/video_core/renderer_vulkan/vk_rasterizer.h
 @@ -525,6 +525,14 @@ private:
@@ -7550,7 +7609,7 @@ index f839674..7f4daef 100644
      /// BB_GPU_PROFILE: a timestamp where a render pass starts (vk_gpu_profiler.h).
      void MarkPass(const GraphicsPipeline* pipeline, const RenderState& state);
      void BindVertexBuffers(const GraphicsPipeline* pipeline,
-@@ -822,6 +830,12 @@ private:
+@@ -829,6 +837,12 @@ private:
      bool pipeline_is_compute = false; ///< bbport: the bound pipeline of BindResources
      bool scene_debug_frame = false; ///< BB_SCENE_DEBUG: this frame's passes are printed
      u32 preupload_frame = ~0u; ///< bbport: frame of the last background pre-upload
@@ -7848,7 +7907,7 @@ index 8333b19..acdae8f 100644
      mutable std::unordered_map<vk::Format, vk::FormatFeatureFlags> format_features;
      mutable std::array<vk::FormatFeatureFlags, 256> format_table{};
 diff --git a/gpu/shadps4/video_core/renderer_vulkan/vk_temporal_upscaler.cpp b/gpu/shadps4/video_core/renderer_vulkan/vk_temporal_upscaler.cpp
-index feaf2c5..60a241b 100644
+index 42d1d54..f0c03a6 100644
 --- a/gpu/shadps4/video_core/renderer_vulkan/vk_temporal_upscaler.cpp
 +++ b/gpu/shadps4/video_core/renderer_vulkan/vk_temporal_upscaler.cpp
 @@ -1,3 +1,6 @@
@@ -7858,7 +7917,7 @@ index feaf2c5..60a241b 100644
  // SPDX-License-Identifier: GPL-2.0-or-later
  #include "video_core/renderer_vulkan/vk_temporal_upscaler.h"
  #include "video_core/renderer_vulkan/vk_gpu_profiler.h"
-@@ -435,7 +438,9 @@ bool TemporalUpscaler::OnFrameStart() {
+@@ -436,7 +439,9 @@ bool TemporalUpscaler::OnFrameStart() {
          failed = false;
          fsr4_failed = false;
      }
@@ -7869,7 +7928,7 @@ index feaf2c5..60a241b 100644
                           jitter_on != last_jitter || applied_upscaler != upscaler;
      if (applied_upscaler != upscaler) {
          // A failed provider keeps a fatal flag internally; a user retry gets a fresh context.
-@@ -485,6 +490,8 @@ bool TemporalUpscaler::OnFrameStart() {
+@@ -486,6 +491,8 @@ bool TemporalUpscaler::OnFrameStart() {
                                               std::memory_order_relaxed);
      if (changed || !dispatched_last_frame) reset = true;
      if (changed) jitter_index = 0;
@@ -7878,7 +7937,7 @@ index feaf2c5..60a241b 100644
      applied_preset = preset;
      applied_scale = preset_scale;
      applied_output = output;
-@@ -495,6 +502,7 @@ bool TemporalUpscaler::OnFrameStart() {
+@@ -496,6 +503,7 @@ bool TemporalUpscaler::OnFrameStart() {
  
      // The display pass of an upscaled frame reads the upscaled UI image.
      display_redirect = ui_phase;
@@ -7886,7 +7945,7 @@ index feaf2c5..60a241b 100644
      ui_phase = false;
      ui_read_barrier = false;
      done_this_frame = false;
-@@ -521,7 +529,7 @@ void TemporalUpscaler::OnDispatch(u64 cs_hash) {
+@@ -522,7 +530,7 @@ void TemporalUpscaler::OnDispatch(u64 cs_hash) {
      if (cs_hash != trigger_hash) {
          return;
      }
@@ -7895,7 +7954,7 @@ index feaf2c5..60a241b 100644
          done_this_frame = true;
          // bbport: a frame with several G-buffer passes is a menu's 3D preview (character
          // creation): its "scene" is one of the previews, and accumulating it into the history
-@@ -679,6 +687,12 @@ bool TemporalUpscaler::EnsureResources(u32 w, u32 h, u32 ow, u32 oh, bool hdr) {
+@@ -680,6 +688,12 @@ bool TemporalUpscaler::EnsureResources(u32 w, u32 h, u32 ow, u32 oh, bool hdr) {
          make_image(fsr4_linear_image, fsr4_linear_view, vk::Format::eR16G16B16A16Sfloat,
                     vk::ImageUsageFlagBits::eStorage | vk::ImageUsageFlagBits::eSampled);
      }
@@ -7908,7 +7967,7 @@ index feaf2c5..60a241b 100644
      for (u32 i = 0; i < taa_history.size(); ++i) {
          taa_history_views[i].reset();
          taa_history[i] = VideoCore::UniqueImage{};
-@@ -785,6 +799,35 @@ void TemporalUpscaler::CreatePipelines() {
+@@ -786,6 +800,35 @@ void TemporalUpscaler::CreatePipelines() {
      merge_pipeline = compute(UPSCALE_MERGE_COMP, *merge_pipeline_layout);
      storage_layout(3, reactive_desc_layout, reactive_pipeline_layout, 3 * sizeof(float));
      reactive_pipeline = compute(UPSCALE_REACTIVE_COMP, *reactive_pipeline_layout);
@@ -7944,7 +8003,7 @@ index feaf2c5..60a241b 100644
      storage_layout(2, taa_sharpen_desc_layout, taa_sharpen_pipeline_layout, sizeof(float));
      taa_sharpen_pipeline = compute(TAA_SHARPEN_COMP, *taa_sharpen_pipeline_layout);
      taa_sharpen_ldr_pipeline = compute(TAA_SHARPEN_LDR_COMP, *taa_sharpen_pipeline_layout);
-@@ -1695,7 +1738,7 @@ void TemporalUpscaler::OnDraw(u64 vs_hash, VideoCore::ImageId color,
+@@ -1696,7 +1739,7 @@ void TemporalUpscaler::OnDraw(u64 vs_hash, VideoCore::ImageId color,
                                 : LdrFrame(ldr_target) ? ldr_target
                                                        : VideoCore::ImageId{});
      }
@@ -7953,7 +8012,7 @@ index feaf2c5..60a241b 100644
      // bbport: native HDR output: the game's tonemapped frame before the first UI pixel (the
      // first Scaleform draw of any kind). A stencil-only first pass binds no colour: the last
      // frame-size RGBA8 target then. (WantsUiStart first: two flags, false unless native HDR saw
-@@ -1710,7 +1753,7 @@ void TemporalUpscaler::OnDraw(u64 vs_hash, VideoCore::ImageId color,
+@@ -1711,7 +1754,7 @@ void TemporalUpscaler::OnDraw(u64 vs_hash, VideoCore::ImageId color,
                                   ? hdr_native.Guest(hdr_ui_target, vk::Format::eR8G8B8A8Unorm)
                                   : HdrNative::Source{});
      }
@@ -7962,7 +8021,7 @@ index feaf2c5..60a241b 100644
          return;
      }
      if (ui_phase) {
-@@ -1744,7 +1787,7 @@ void TemporalUpscaler::OnDraw(u64 vs_hash, VideoCore::ImageId color,
+@@ -1745,7 +1788,7 @@ void TemporalUpscaler::OnDraw(u64 vs_hash, VideoCore::ImageId color,
           image.info.pixel_format == vk::Format::eR8G8B8A8Srgb) &&
          RenderTarget(image.info.size.width, image.info.size.height) &&
          !FrameCapture::IsDisplayBuffer(image.info.guest_address);
@@ -7971,7 +8030,7 @@ index feaf2c5..60a241b 100644
                                    camera_motion.Ready() && ldr_target == color,
                                    Active() && !failed)) {
      case UiComposition::Background::None:
-@@ -1792,12 +1835,18 @@ void TemporalUpscaler::OnDisplayPass(VAddr address, VideoCore::ImageId frame) {
+@@ -1793,12 +1836,18 @@ void TemporalUpscaler::OnDisplayPass(VAddr address, VideoCore::ImageId frame) {
      // bbport: a frame with no UI draw at all (the HUD hidden in the game's options, #23) reaches
      // its display pass without the upscale its first UI draw would start: run it here, so the
      // display pass reads the upscaled frame instead of the render-size one.
@@ -7991,7 +8050,7 @@ index feaf2c5..60a241b 100644
      // bbport: frame generation: a frame without UI is its own frame without UI.
      if (frame_gen && frame_gen->WantsHudless()) {
          if (ui_phase) {
-@@ -1888,6 +1937,11 @@ void TemporalUpscaler::EnsureUiResources(u32 w, u32 h, vk::Format color, vk::For
+@@ -1889,6 +1938,11 @@ void TemporalUpscaler::EnsureUiResources(u32 w, u32 h, vk::Format color, vk::For
              .initialLayout = vk::ImageLayout::eUndefined,
          });
          ui_format = color;
@@ -8003,7 +8062,7 @@ index feaf2c5..60a241b 100644
      }
      if (new_depth) {
          ui_depth_view.reset();
-@@ -1989,27 +2043,31 @@ void TemporalUpscaler::RunUiOnly(VideoCore::ImageId color_id, VideoCore::ImageId
+@@ -1990,27 +2044,31 @@ void TemporalUpscaler::RunUiOnly(VideoCore::ImageId color_id, VideoCore::ImageId
      const auto& color = texture_cache.GetImage(color_id);
      const auto depth_format = depth_id ? texture_cache.GetImage(depth_id).info.pixel_format
                                        : vk::Format::eD32SfloatS8Uint;
@@ -8044,7 +8103,7 @@ index feaf2c5..60a241b 100644
          runtime.FlushBarriers();
      }
      // bbport: with Widescreen on another screen shape (BB_UI_SIZE), a frame without the 3D world
-@@ -2072,6 +2130,58 @@ void TemporalUpscaler::RunUiOnly(VideoCore::ImageId color_id, VideoCore::ImageId
+@@ -2073,6 +2131,58 @@ void TemporalUpscaler::RunUiOnly(VideoCore::ImageId color_id, VideoCore::ImageId
          barrier.newLayout = vk::ImageLayout::eGeneral;
          cmd.pipelineBarrier2({.imageMemoryBarrierCount = 1, .pImageMemoryBarriers = &barrier});
      });
@@ -8103,7 +8162,7 @@ index feaf2c5..60a241b 100644
      reset = true; // returning to 3D must not reuse history from before a menu/loading screen
      done_this_frame = ui_phase = true;
      ui_color = color_id;
-@@ -2079,6 +2189,7 @@ void TemporalUpscaler::RunUiOnly(VideoCore::ImageId color_id, VideoCore::ImageId
+@@ -2080,6 +2190,7 @@ void TemporalUpscaler::RunUiOnly(VideoCore::ImageId color_id, VideoCore::ImageId
  }
  
  void TemporalUpscaler::RunScaled() {
@@ -8111,7 +8170,7 @@ index feaf2c5..60a241b 100644
      if (auto* profiler = GpuProfiler::Get()) {
          const char* label = BbSettings::Get().upscaler == BbSettings::UpscalerTaa
              ? "upscaler RunScaled (TAA)" : "upscaler RunScaled (FSR)";
-@@ -2462,7 +2573,7 @@ vk::ImageView TemporalUpscaler::Mirror(vk::Image image, std::vector<MirrorView>&
+@@ -2463,7 +2574,7 @@ vk::ImageView TemporalUpscaler::Mirror(vk::Image image, std::vector<MirrorView>&
  bool TemporalUpscaler::RedirectColor(VideoCore::ImageId color,
                                       const VideoCore::ImageViewInfo& view_info, Target& target) {
      if (ui_phase && color == ui_color) {
@@ -8120,7 +8179,7 @@ index feaf2c5..60a241b 100644
                    vk::ImageLayout::eGeneral, ui_width, ui_height, true};
          return true;
      }
-@@ -2470,6 +2581,7 @@ bool TemporalUpscaler::RedirectColor(VideoCore::ImageId color,
+@@ -2471,6 +2582,7 @@ bool TemporalUpscaler::RedirectColor(VideoCore::ImageId color,
      const VAddr address = image.info.guest_address;
      if (!FrameCapture::IsDisplayBuffer(address)) {
          display_redirect = false;
@@ -8128,7 +8187,7 @@ index feaf2c5..60a241b 100644
          return false;
      }
      std::scoped_lock lock{display_mutex};
-@@ -2478,13 +2590,16 @@ bool TemporalUpscaler::RedirectColor(VideoCore::ImageId color,
+@@ -2479,13 +2591,16 @@ bool TemporalUpscaler::RedirectColor(VideoCore::ImageId color,
          display.valid = false; // not upscaled: the presenter shows the guest buffer
          return false;
      }
@@ -8147,7 +8206,7 @@ index feaf2c5..60a241b 100644
          display.width = ui_width;
          display.height = ui_height;
          display.image = VideoCore::UniqueImage(device, instance.GetAllocator());
-@@ -2518,7 +2633,7 @@ bool TemporalUpscaler::RedirectColor(VideoCore::ImageId color,
+@@ -2519,7 +2634,7 @@ bool TemporalUpscaler::RedirectColor(VideoCore::ImageId color,
          cmd.pipelineBarrier2({.imageMemoryBarrierCount = 1, .pImageMemoryBarriers = &b});
      });
      display.valid = true;
@@ -8156,7 +8215,7 @@ index feaf2c5..60a241b 100644
                vk::ImageLayout::eGeneral, ui_width, ui_height};
      return true;
  }
-@@ -2554,7 +2669,7 @@ bool TemporalUpscaler::RedirectSampled(VideoCore::ImageId image,
+@@ -2555,7 +2670,7 @@ bool TemporalUpscaler::RedirectSampled(VideoCore::ImageId image,
              cmd.pipelineBarrier2({.imageMemoryBarrierCount = 1, .pImageMemoryBarriers = &b});
          });
      }
@@ -8165,7 +8224,7 @@ index feaf2c5..60a241b 100644
      layout = vk::ImageLayout::eGeneral;
      return true;
  }
-@@ -2565,7 +2680,7 @@ bool TemporalUpscaler::DisplayOverride(VAddr address, Display& display) {
+@@ -2566,7 +2681,7 @@ bool TemporalUpscaler::DisplayOverride(VAddr address, Display& display) {
      if (it == displays.end() || !it->second.valid) {
          return false;
      }
@@ -8174,7 +8233,7 @@ index feaf2c5..60a241b 100644
      // Diagnostic capture of the actual completed display buffer, including native UI.
      // BB_PRESENT_DUMP_COUNT=N: the trigger dumps N consecutive frames (temporal stability).
      static const char* dump = std::getenv("BB_PRESENT_DUMP_TRIGGER");
-@@ -2583,9 +2698,10 @@ bool TemporalUpscaler::DisplayOverride(VAddr address, Display& display) {
+@@ -2584,9 +2699,10 @@ bool TemporalUpscaler::DisplayOverride(VAddr address, Display& display) {
          scheduler.EndRendering();
          const bool bgra = display.format == vk::Format::eB8G8R8A8Unorm ||
                            display.format == vk::Format::eB8G8R8A8Srgb;
@@ -8187,7 +8246,7 @@ index feaf2c5..60a241b 100644
      }
      return true;
  }
-@@ -2611,8 +2727,10 @@ bool TemporalUpscaler::PresentDumpDue() {
+@@ -2612,8 +2728,10 @@ bool TemporalUpscaler::PresentDumpDue() {
  void TemporalUpscaler::DumpPresented(vk::Image image, u32 width, u32 height, vk::Format format) {
      scheduler.EndRendering();
      const bool bgra = format == vk::Format::eB8G8R8A8Unorm || format == vk::Format::eB8G8R8A8Srgb;
@@ -8199,7 +8258,7 @@ index feaf2c5..60a241b 100644
  }
  
  } // namespace Vulkan
-@@ -2699,3 +2817,537 @@ bool TemporalUpscaler::RecordFsr4(vk::CommandBuffer cmdbuf, Fsr4Upscaler::Image
+@@ -2706,3 +2824,537 @@ bool TemporalUpscaler::RecordFsr4(vk::CommandBuffer cmdbuf, Fsr4Upscaler::Image
  }
  
  } // namespace Vulkan
@@ -8814,10 +8873,10 @@ index acec36c..fdad67a 100644
          std::vector<MirrorView> views;
          vk::Format format{};
 diff --git a/gpu/shim/bbport_overlay.cpp b/gpu/shim/bbport_overlay.cpp
-index 93b5634..bbad55e 100644
+index 801d45c..83437e3 100644
 --- a/gpu/shim/bbport_overlay.cpp
 +++ b/gpu/shim/bbport_overlay.cpp
-@@ -405,6 +405,295 @@ const char* Item(const char* english, const char* russian = nullptr) {
+@@ -445,6 +445,295 @@ const char* Item(const char* english, const char* russian = nullptr) {
      return russian ? BbSettings::MenuText(english, russian) : BbSettings::MenuText(english);
  }
  
@@ -9113,7 +9172,7 @@ index 93b5634..bbad55e 100644
  void HdrSection() {
      auto& s = BbSettings::Get();
      Section("HDR output", "Вывод HDR");
-@@ -439,22 +728,41 @@ void HdrSection() {
+@@ -479,22 +768,41 @@ void HdrSection() {
      }
      int mode = std::clamp(s.hdr_mode.load(), 0, BbSettings::HdrModeCount - 1);
      if (const char* label = Item("HDR mode", "Режим HDR")) {
@@ -9155,7 +9214,7 @@ index 93b5634..bbad55e 100644
      if (const char* label = Item("Paper white (nits)", "Белый SDR (нит)")) {
          Slider(label, s.hdr_paper_white, BbSettings::HdrPaperWhiteMin, BbSettings::HdrPaperWhiteMax, "%.0f",
                 ImGuiSliderFlags_AlwaysClamp);
-@@ -499,19 +807,19 @@ void HdrSection() {
+@@ -539,19 +847,19 @@ void HdrSection() {
              "1 — весь (до пика). Меняются сразу. Ctrl+клик по ползунку — ввести точное значение."));
      }
      if (mode == BbSettings::HdrModeNative) {
@@ -9180,7 +9239,7 @@ index 93b5634..bbad55e 100644
                  "1 — более насыщенные, как на мониторе с широким охватом в SDR (привычный вид; точный sRGB "
                  "рядом с ним может казаться блёклым). Меняются сразу."));
          }
-@@ -551,6 +859,9 @@ void PictureSection() {
+@@ -591,6 +899,9 @@ void PictureSection() {
              "0.25-8)."));
      }
      const bool vignette = s.graphics_vignette;
@@ -9190,7 +9249,7 @@ index 93b5634..bbad55e 100644
      bool moved = false;
      const auto slider = [&](const char* english, const char* russian, std::atomic<float>& value, float lo,
                              float hi, const char* format = "%.2f") {
-@@ -558,12 +869,16 @@ void PictureSection() {
+@@ -598,12 +909,16 @@ void PictureSection() {
              moved |= Slider(label, value, lo, hi, format);
          }
      };
@@ -9211,7 +9270,7 @@ index 93b5634..bbad55e 100644
      if (const char* label = Item("Vignette", "Виньетка")) {
          Checkbox(label, s.graphics_vignette);
          moved |= vignette != s.graphics_vignette;
-@@ -587,6 +902,17 @@ void PictureSection() {
+@@ -627,6 +942,17 @@ void PictureSection() {
          }
      }
      ImGui::EndDisabled();
@@ -9229,7 +9288,7 @@ index 93b5634..bbad55e 100644
  }
  
  void EffectsSection() {
-@@ -1687,6 +2013,7 @@ void Menu() {
+@@ -1845,6 +2171,7 @@ void Menu() {
      bool restart =
          s.object_motion != s.startup_object_motion || s.model_lod != s.startup_model_lod ||
          s.live_resolution != s.startup_live_resolution || s.hdr != s.startup_hdr ||
@@ -9237,10 +9296,10 @@ index 93b5634..bbad55e 100644
          BbSettings::ResolutionNeedsRestart();
      for (int e = 0; e < BbSettings::EffectCount; ++e) {
          restart |= s.effects[e] != s.startup_effects[e];
-@@ -2025,6 +2352,11 @@ bool HandleEvent(const SDL_Event& event) {
-     case SDL_EVENT_KEY_DOWN:
-     case SDL_EVENT_KEY_UP: {
-         const bool down = event.type == SDL_EVENT_KEY_DOWN;
+@@ -2609,6 +2936,11 @@ bool HandleEvent(const SDL_Event& event) {
+             }
+             return true;
+         }
 +        if (down && !event.key.repeat && event.key.key == SDLK_F9 && BbSettings::Get().startup_psychov30) {
 +            auto& compare = BbSettings::Get().hdr16_compare;
 +            compare = (compare.load() + 1) % BbSettings::Values::HdrCompareCount;
@@ -9250,7 +9309,7 @@ index 93b5634..bbad55e 100644
              ((event.key.key == SDLK_INSERT && (is_open || MenuKeys() != OverlayKeys::Off)) ||
               (is_open && event.key.key == SDLK_ESCAPE && !io.WantTextInput))) {
 diff --git a/gpu/shim/bbport_settings.cpp b/gpu/shim/bbport_settings.cpp
-index 1778aee..50e2836 100644
+index 5cdb46f..8ad3f33 100644
 --- a/gpu/shim/bbport_settings.cpp
 +++ b/gpu/shim/bbport_settings.cpp
 @@ -10,11 +10,14 @@
@@ -9281,7 +9340,7 @@ index 1778aee..50e2836 100644
  const char* Path() {
      const char* env = std::getenv("BB_CONFIG");
      return env && env[0] ? env : "lantern.ini";
-@@ -299,24 +308,76 @@ void Set(Values& v, const std::string& key, const std::string& value) {
+@@ -309,24 +318,76 @@ void Set(Values& v, const std::string& key, const std::string& value) {
          v.hdr_peak = Clamp(std::isfinite(f) ? f : HdrPeakDefault, HdrPeakMin, HdrPeakMax);
      } else if (key == "hdr_peak_auto") {
          v.hdr_peak_auto = i != 0;
@@ -9362,7 +9421,7 @@ index 1778aee..50e2836 100644
      } else if (key == "live_resolution") {
          v.live_resolution = value == "auto" ? -1 : std::clamp(i, 0, 1);
      } else if (key == "cheat_vials") {
-@@ -380,8 +441,125 @@ MenuLanguage LanguageOfLocale(const char* lang) {
+@@ -390,8 +451,125 @@ MenuLanguage LanguageOfLocale(const char* lang) {
      return MenuLanguage::English;
  }
  
@@ -9488,7 +9547,7 @@ index 1778aee..50e2836 100644
  static std::pair<int, int> DisplaySize() {
      static const std::pair<int, int> size = [] {
          int w = 0, h = 0;
-@@ -441,8 +619,13 @@ void Load() {
+@@ -451,8 +629,13 @@ void Load() {
          }
          v.menu_language = LanguageOfLocale(lang);
      }
@@ -9503,7 +9562,7 @@ index 1778aee..50e2836 100644
          while (std::fgets(line, sizeof(line), file)) {
              std::string text{line};
              text.erase(text.find_last_not_of(" \t\r\n") + 1);
-@@ -455,6 +638,15 @@ void Load() {
+@@ -465,6 +648,15 @@ void Load() {
          std::fclose(file);
          std::printf("Settings: %s\n", Path());
      }
@@ -9519,15 +9578,15 @@ index 1778aee..50e2836 100644
      if (const char* env = std::getenv("BB_UPSCALER")) {
          v.upscaler = UpscalerOff;
          for (int u = 0; u < UpscalerCount; ++u) {
-@@ -496,6 +688,7 @@ void Load() {
+@@ -506,6 +698,7 @@ void Load() {
      v.startup_hdr = v.hdr;
      v.startup_optiscaler = {v.optiscaler_compat, v.optiscaler_ngx_lock, v.optiscaler_clean_thread,
                              v.optiscaler_sync_submit};
 +    v.startup_psychov30 = v.startup_hdr && v.hdr_mode == HdrModePsychoV30;
  }
  
- void ConfigureUpscalerSupport(bool fsr4, bool fsr411, bool dlss) {
-@@ -614,9 +807,36 @@ void Save() {
+ void ConfigureUpscalerSupport(bool fsr4, bool fsr411, bool dlss, bool fsr_sdk) {
+@@ -634,9 +827,36 @@ void Save() {
      put("hdr_peak", fixed(v.hdr_peak, 0));
      put("hdr_peak_auto", flag(v.hdr_peak_auto));
      put("hdr_boost", fixed(v.hdr_boost, 2));
@@ -9565,7 +9624,7 @@ index 1778aee..50e2836 100644
      put("graphics_controls",flag(v.graphics_controls));
      put("graphics_vignette",flag(v.graphics_vignette));
      put("graphics_ao_strength",fixed(v.graphics_ao_strength,2));
-@@ -668,7 +888,7 @@ void Save() {
+@@ -688,7 +908,7 @@ void Save() {
      bool had_lines = false;
      std::vector<bool> written(keys.size());
      if (FILE* file = std::fopen(Path(), "r")) {
@@ -9574,7 +9633,7 @@ index 1778aee..50e2836 100644
          while (std::fgets(line, sizeof(line), file)) {
              had_lines = true;
              std::string text{line};
-@@ -678,6 +898,10 @@ void Save() {
+@@ -698,6 +918,10 @@ void Save() {
                  std::string key = text.substr(0, eq);
                  key.erase(key.find_last_not_of(" \t") + 1);
                  key.erase(0, key.find_first_not_of(" \t"));
@@ -9586,7 +9645,7 @@ index 1778aee..50e2836 100644
                                               [&](const auto& k) { return k.first == key; });
                  if (it != keys.end()) {
 diff --git a/gpu/shim/bbport_settings.h b/gpu/shim/bbport_settings.h
-index dd4ae62..b718550 100644
+index c6df6ea..1b2c7e9 100644
 --- a/gpu/shim/bbport_settings.h
 +++ b/gpu/shim/bbport_settings.h
 @@ -5,6 +5,18 @@
@@ -9607,7 +9666,7 @@ index dd4ae62..b718550 100644
 +
  
  enum Upscaler : int { UpscalerOff = 0, UpscalerFsr3 = 1, UpscalerFsr4 = 2, UpscalerFsr411 = 3,
-                       UpscalerTaa = 4, UpscalerDlss = 5, UpscalerCount };
+                       UpscalerTaa = 4, UpscalerDlss = 5, UpscalerFsr = 6, UpscalerCount };
 @@ -66,13 +78,23 @@ int OutputHeight(int index);
  inline constexpr int CheatOff = 0, CheatInfinite = -1, CheatMaxAmount = 99;
  inline constexpr int CheatGunRanges[] = {0, 150, 200, 300};
@@ -9635,7 +9694,7 @@ index dd4ae62..b718550 100644
  static_assert(sizeof(HdrModeNames) / sizeof(HdrModeNames[0]) == HdrModeCount);
  
  inline constexpr int DlssPresetDefault = 0, DlssPresetK = 11, DlssPresetMax = 26;
-@@ -165,8 +187,10 @@ struct Values {
+@@ -168,8 +190,10 @@ struct Values {
          hdr_boost{HdrBoostDefault};
      std::atomic<bool> hdr_peak_auto{true};
      std::atomic<float> hdr_display_peak{0.0f};
@@ -9648,7 +9707,7 @@ index dd4ae62..b718550 100644
      std::atomic<int> hdr_mode{HdrModeNative};
      std::atomic<int> hdr_output{HdrOutputOff};
      std::atomic<int> live_resolution{0};
-@@ -193,6 +217,47 @@ struct Values {
+@@ -197,6 +221,47 @@ struct Values {
      int startup_model_lod = 0;
      int startup_output_res = OutputDefault;
      int startup_live_resolution = 0;
@@ -9696,7 +9755,7 @@ index dd4ae62..b718550 100644
      bool startup_hdr = false;
  };
  
-@@ -212,8 +277,28 @@ void ConfigureUpscalerSupport(bool fsr4, bool fsr411, bool dlss = false);
+@@ -216,8 +281,28 @@ void ConfigureUpscalerSupport(bool fsr4, bool fsr411, bool dlss = false, bool fs
  bool FixedRenderSession();
  int RenderPreset();
  bool ResolutionNeedsRestart();
@@ -9783,10 +9842,10 @@ index 5c854f7..0cfce7a 100644
          UNREACHABLE_MSG("Failed to initialize SDL video: {}", SDL_GetError());
      }
 diff --git a/scripts/run_windows.py b/scripts/run_windows.py
-index e4359f2..1424ea4 100644
+index 1e17d24..ab40592 100644
 --- a/scripts/run_windows.py
 +++ b/scripts/run_windows.py
-@@ -303,7 +303,7 @@ def main():
+@@ -305,7 +305,7 @@ def main():
                  from engine_assets import prepare_menu_assets
                  try:
                      menus = prepare_menu_assets(merged, out / 'eboot.elf', data / 'engine-assets',
@@ -9795,7 +9854,7 @@ index e4359f2..1424ea4 100644
                      os.environ['BB_PC_MENU_ASSETS'] = str(menus)
                      print(f'Engine: native PC menus prepared locally: {menus}', flush=True)
                      if settings_value(config, 'rebirth') == '1':
-@@ -331,7 +331,7 @@ def main():
+@@ -333,7 +333,7 @@ def main():
          if scaled_output:
              live = os.environ.get('BB_LIVE_RES') or settings_value(config, 'live_resolution') or '0'
              if live == 'auto':
@@ -9804,7 +9863,7 @@ index e4359f2..1424ea4 100644
                  live = run([caps, '--live-resolution'], capture=True, check=False) or '0'
              live = '1' if live == '1' else '0'
          if live == '1':
-@@ -361,7 +361,7 @@ def main():
+@@ -363,7 +363,7 @@ def main():
          if heaps and 'BB_DMEM_MB' not in os.environ:
              os.environ['BB_DMEM_MB'] = '9152'
              print("Patches: the game's heaps are enlarged; direct memory 9152 MiB", flush=True)
@@ -9813,22 +9872,18 @@ index e4359f2..1424ea4 100644
          command = [probe, out / 'boot-linked.bin', '--content-profile', out / 'content.bin',
                     '--patches', out / 'patches.bin', '--app0', merged,
                     '--user', os.environ.get('BB_USER_DIR', data / 'user'),
-diff --git a/src/runtime_pad.c b/src/runtime_pad.c
-index 3b26aff..e13b448 100644
---- a/src/runtime_pad.c
-+++ b/src/runtime_pad.c
-@@ -126,7 +126,10 @@ static SDL_Gamepad *current_gamepad(void) {
-     static int on_preferred; static uint64_t last_scan;
-     if (!sdl_ready) sdl_ready = SDL_WasInit(SDL_INIT_GAMEPAD) ? 1 : SDL_InitSubSystem(SDL_INIT_GAMEPAD) ? 1 : -1;
-     if (sdl_ready<0) return NULL;
--    if (gamepad && !SDL_GamepadConnected(gamepad)) { SDL_CloseGamepad(gamepad); gamepad=NULL; }
-+    if (gamepad && !SDL_GamepadConnected(gamepad)) {
-+        printf("Runtime: gamepad disconnected: %s\n",SDL_GetGamepadName(gamepad));
-+        SDL_CloseGamepad(gamepad); gamepad=NULL;
-+    }
-     const char *want=preferred_gamepad();
-     const uint64_t now=now_us();
-     if (!gamepad || (want && !on_preferred && now-last_scan>1000000)) {
+diff --git a/src/sys/pad_host.c b/src/sys/pad_host.c
+index e82e22b..2bac86e 100644
+--- a/src/sys/pad_host.c
++++ b/src/sys/pad_host.c
+@@ -134,6 +134,7 @@ static SDL_Gamepad *current_gamepad(void) {
+     if (!sdl_state) sdl_state = SDL_WasInit(SDL_INIT_GAMEPAD) || SDL_InitSubSystem(SDL_INIT_GAMEPAD) ? 1 : -1;
+     if (sdl_state < 0) return NULL;
+     if (gamepad && !SDL_GamepadConnected(gamepad)) {
++        printf("Runtime: gamepad disconnected: %s\n", SDL_GetGamepadName(gamepad));
+         SDL_CloseGamepad(gamepad);
+         gamepad = NULL;
+     }
 diff --git a/tests/test_settings.cpp b/tests/test_settings.cpp
 index b9d9eef..2630679 100644
 --- a/tests/test_settings.cpp

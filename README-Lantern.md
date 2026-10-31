@@ -19,6 +19,10 @@ Lantern Engine runs your own copy of Bloodborne on Windows and Linux: a launcher
 2. Run `Lantern Engine` in the unpacked folder, pick your game folder and press **Play**. From a terminal: `./lantern.sh /path/to/CUSA03173`.
 3. It needs a Vulkan driver (Mesa or NVIDIA), Python 3 and glibc 2.38 or newer (Ubuntu 24.04, Fedora 39, Arch, SteamOS 3.6, Bazzite). From 0.9.37 beta 7 the launcher updates itself on Linux too, and DLSS Super Resolution works on RTX cards with NVIDIA's driver (DLSS Frame Generation is Windows only).
 
+## Sponsors
+
+Seamless co-op runs on a server in Frankfurt, sponsored by [1337 Hosting](https://1337hosting.com). Thank you!
+
 ## Credits
 
 | | |
@@ -27,12 +31,14 @@ Lantern Engine runs your own copy of Bloodborne on Windows and Linux: a launcher
 | Engine starting point | [DarkIzuku/bloodborne_pc](https://github.com/DarkIzuku/bloodborne_pc) (built on [bbport](https://github.com/deadinside28/bloodborne_pc) and [shadPS4](https://github.com/shadps4-emu/shadPS4)) |
 | Renderer crash fixes | adapted from [AwesomeObserver](https://github.com/AwesomeObserver/bloodborne_pc) and [deadinside28](https://github.com/deadinside28/bloodborne_pc) |
 | Online backend for The Hunter's Dream | [droogie/bbhost](https://github.com/droogie/bbhost) |
-| Online servers | [The Hunter's Dream](https://thehuntersdream.com) |
+| FSR (FSR 4.1.2 and FSR 3.1.6) | [AMD FSR SDK 2.4](https://github.com/GPUOpen-LibrariesAndSDKs/FidelityFX-SDK), AMD's signed Vulkan binaries |
+| Seamless co-op server | [1337 Hosting](https://1337hosting.com) |
 | FSR 3.1 and FSR 4 on Vulkan | [FireBurn/FSR-Vulkan](https://github.com/FireBurn/FSR-Vulkan) and the AMD FidelityFX SDK |
 | FSR 4.1.1 | [fsr4vk](https://github.com/dvj5411/fsr4vk), with the AMD driver fix from [0xCydral](https://github.com/0xCydral/bloodborne_pc) |
 | DLSS | NVIDIA DLSS SDK |
 | Sound | [LibAtrac9](https://github.com/Thealexbarney/LibAtrac9) |
 | In-game menu | [Dear ImGui](https://github.com/ocornut/imgui) |
+| 4K menus | [Real-ESRGAN](https://github.com/xinntao/Real-ESRGAN) with [ncnn](https://github.com/Tencent/ncnn), downloaded by the launcher and run on the player's own game files |
 | Controller mappings | [SDL_GameControllerDB](https://github.com/mdqinc/SDL_GameControllerDB) |
 | UI library | [WPF-UI](https://github.com/lepoco/wpfui) |
 

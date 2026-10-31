@@ -6,6 +6,7 @@
 
 #include <atomic>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <map>
 #include <mutex>
@@ -85,22 +86,83 @@ s32 PS4_SYSV_ABI sig_delete_ctx(unsigned ctx) {
     for (auto it = g_conn.begin(); it != g_conn.end();) it = it->second.ctx == ctx ? g_conn.erase(it) : std::next(it);
     return 0;
 }
+std::atomic<std::int64_t> g_resolve_at{0};
+
+bool RoomBackend() {
+    static const bool room = [] {
+        const char* v = std::getenv("BB_NET_BACKEND");
+        return v && std::strcmp(v, "room") == 0;
+    }();
+    return room;
+}
+
+void RetryResolve(unsigned conn, const std::string& peer, bool force) {
+    const std::int64_t now = NowMs();
+    if (!force && now - g_resolve_at.load() < 2000) return;
+    g_resolve_at = now;
+    Peer known;
+    if (PeersFindOnline(peer, &known)) {
+        std::lock_guard lk(g_sig_mu);
+        const auto it = g_conn.find(conn);
+        if (it != g_conn.end() && !it->second.member_id) it->second.member_id = known.member_id;
+        return;
+    }
+    std::uint32_t addr = 0;
+    std::uint16_t port = 0;
+    std::string error;
+    if (!ServerSignalingResolve(peer, &addr, &port, error)) return;
+    const std::uint16_t member = PeersProvisional(peer, addr, port).member_id;
+    std::lock_guard lk(g_sig_mu);
+    const auto it = g_conn.find(conn);
+    if (it == g_conn.end() || it->second.member_id) return;
+    it->second.member_id = member;
+    Log("signaling: %s found on a later try (%s:%u)", peer.c_str(), BbNet::MaskIpv4(addr).c_str(), port);
+    announce_locked(conn, it->second);
+}
+
 // Idempotent per peer: the game re-activates.
 s32 PS4_SYSV_ABI sig_activate(unsigned ctx, const void* npid, unsigned* conn_out) {
     if (!conn_out) return kSigErrInvalidArg;
     const std::string peer = NpIdText(npid);
-    std::lock_guard lk(g_sig_mu);
-    for (auto& [id, c] : g_conn) {
-        if (c.ctx == ctx && c.online_id == peer && !c.dead) {
-            *conn_out = id;
-            if (!c.member_id) {
-                Peer p;
-                if (PeersFindOnline(peer, &p)) c.member_id = p.member_id;
+    unsigned retry = 0;
+    std::uint32_t fresh_addr = 0;
+    std::uint16_t fresh_port = 0;
+    if (RoomBackend()) {
+        std::string error;
+        Peer cached;
+        if (ServerSignalingResolve(peer, &fresh_addr, &fresh_port, error) && PeersFindOnline(peer, &cached) &&
+            (cached.addr != fresh_addr || cached.port != fresh_port)) {
+            Log("signaling: %s came back at a new address; the old one is dropped", peer.c_str());
+            {
+                std::lock_guard lk(g_sig_mu);
+                for (auto& [id, c] : g_conn)
+                    if (c.online_id == peer) c.dead = true;
             }
-            announce_locked(id, c);
-            return 0;
+            if (cached.member_id >= 0xff00) PeersProvisional(peer, fresh_addr, fresh_port);
+            else PeersErase(cached.member_id);
         }
     }
+    {
+        std::lock_guard lk(g_sig_mu);
+        for (auto& [id, c] : g_conn) {
+            if (c.ctx == ctx && c.online_id == peer && !c.dead) {
+                *conn_out = id;
+                if (!c.member_id) {
+                    Peer p;
+                    if (PeersFindOnline(peer, &p)) c.member_id = p.member_id;
+                }
+                announce_locked(id, c);
+                if (!c.member_id) retry = id;
+                else return 0;
+                break;
+            }
+        }
+    }
+    if (retry) {
+        std::thread([retry, peer] { RetryResolve(retry, peer, true); }).detach();
+        return 0;
+    }
+    std::lock_guard lk(g_sig_mu);
     const unsigned id = g_next_conn++;
     Conn c;
     c.ctx = ctx;
@@ -117,8 +179,7 @@ s32 PS4_SYSV_ABI sig_activate(unsigned ctx, const void* npid, unsigned* conn_out
         if (ServerSignalingResolve(peer, &addr, &port, error)) {
             c.member_id = PeersProvisional(peer, addr, port).member_id;
             char text[64];
-            std::snprintf(text, sizeof(text), " (resolved %u.%u.%u.%u:%u)", addr & 0xff, (addr >> 8) & 0xff,
-                          (addr >> 16) & 0xff, addr >> 24, port);
+            std::snprintf(text, sizeof(text), " (resolved %s:%u)", BbNet::MaskIpv4(addr).c_str(), port);
             how = text;
         } else {
             how = " (not known and not resolved: " + error + ")";
@@ -144,6 +205,7 @@ s32 PS4_SYSV_ABI sig_status(unsigned ctx, unsigned conn, int* st, std::uint32_t*
     int status = 0;
     std::uint32_t a = 0;
     std::uint16_t p = 0;
+    std::string unresolved;
     {
         std::lock_guard lk(g_sig_mu);
         const auto it = g_conn.find(conn);
@@ -155,8 +217,13 @@ s32 PS4_SYSV_ABI sig_status(unsigned ctx, unsigned conn, int* st, std::uint32_t*
                 p = static_cast<std::uint16_t>((peer.port << 8) | (peer.port >> 8));
             } else {
                 status = 1;
+                if (!it->second.member_id) unresolved = it->second.online_id;
             }
         }
+    }
+    if (!unresolved.empty() && NowMs() - g_resolve_at.load() >= 2000) {
+        g_resolve_at = NowMs();
+        std::thread([conn, unresolved] { RetryResolve(conn, unresolved, true); }).detach();
     }
     if (st) *st = status;
     if (addr) *addr = a;

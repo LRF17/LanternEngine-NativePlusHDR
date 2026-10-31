@@ -66,6 +66,7 @@ find_package(tsl-robin-map REQUIRED)
 find_package(PkgConfig REQUIRED)
 pkg_check_modules(XXHASH REQUIRED IMPORTED_TARGET libxxhash)
 pkg_check_modules(SDL3 REQUIRED IMPORTED_TARGET sdl3)
+pkg_check_modules(OPUS REQUIRED IMPORTED_TARGET opus)
 find_package(Zydis REQUIRED)
 if (WIN32)
     # bbport: Windows (MSYS2 MINGW64). bbgpu is a static library linked into bb-probe.exe
@@ -203,7 +204,6 @@ set(COMMON
     shadps4/common/path_util.cpp shadps4/common/rdtsc.cpp shadps4/common/spin_lock.cpp shadps4/common/recursive_lock.cpp
     shadps4/common/string_util.cpp shadps4/common/thread.cpp shadps4/common/signal_context.cpp
     shim/common/logging/log.cpp)
-file(GLOB AVPLAYER CONFIGURE_DEPENDS shadps4/core/libraries/avplayer/*.cpp)
 pkg_check_modules(FFMPEG REQUIRED IMPORTED_TARGET libavformat libavcodec libavutil libswscale libswresample)
 file(GLOB SHIM_SOURCES CONFIGURE_DEPENDS shim/*.cpp shim/*/*.cpp)
 if (WIN32)
@@ -219,15 +219,12 @@ else()
     set(BBGPU_LIBRARY_TYPE SHARED)
 endif()
 add_library(bbgpu ${BBGPU_LIBRARY_TYPE} ${VIDEO_CORE} ${RECOMPILER} ${COMMON} ${SHIM_SOURCES}
-    shadps4/core/libraries/gnmdriver/gnmdriver.cpp
-    shadps4/core/libraries/videoout/driver.cpp shadps4/core/libraries/videoout/video_out.cpp
-    shadps4/core/libraries/kernel/equeue.cpp ${AVPLAYER}
-    shadps4/core/libraries/videodec/video_utils.cpp)
+    shadps4/core/libraries/gnmdriver/gnmdriver.cpp)
 add_dependencies(bbgpu host_shaders)
 add_subdirectory(bbnet)
 target_link_libraries(bbgpu PUBLIC bbnet)
 # In-game settings menu: Dear ImGui (third_party/imgui, MIT) with its Vulkan backend, and an
-# embedded Cyrillic font (third_party/fonts).
+# embedded Cyrillic font (third_party/fonts); party names in Flesh and Blood by JoannaVu.
 target_sources(bbgpu PRIVATE third_party/imgui/imgui.cpp third_party/imgui/imgui_draw.cpp
     third_party/imgui/imgui_tables.cpp third_party/imgui/imgui_widgets.cpp
     third_party/imgui/backends/imgui_impl_vulkan.cpp)
@@ -235,13 +232,14 @@ target_include_directories(bbgpu PRIVATE third_party/imgui third_party/imgui/bac
 target_compile_definitions(bbgpu PRIVATE IMGUI_IMPL_VULKAN_NO_PROTOTYPES
     BB_FONT_PATH="${CMAKE_CURRENT_SOURCE_DIR}/third_party/fonts/DejaVuSans.ttf"
     BB_CJK_FONT_PATH="${CMAKE_CURRENT_SOURCE_DIR}/third_party/fonts/LanternMenuSC.ttf"
+    BB_NAME_FONT_PATH="${CMAKE_CURRENT_SOURCE_DIR}/third_party/fonts/FleshAndBlood.ttf"
     BB_KEYCAP_FONT_PATH="${CMAKE_CURRENT_SOURCE_DIR}/third_party/imgui/misc/fonts/Roboto-Medium.ttf")
 set_source_files_properties(shim/bbport_overlay.cpp PROPERTIES
-    OBJECT_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/third_party/fonts/DejaVuSans.ttf;${CMAKE_CURRENT_SOURCE_DIR}/third_party/fonts/LanternMenuSC.ttf")
+    OBJECT_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/third_party/fonts/DejaVuSans.ttf;${CMAKE_CURRENT_SOURCE_DIR}/third_party/fonts/LanternMenuSC.ttf;${CMAKE_CURRENT_SOURCE_DIR}/third_party/fonts/FleshAndBlood.ttf")
 # Keyboard prompts' keycaps (shim/engine/keycap_art.cpp): Roboto Medium (Apache License 2.0).
 set_source_files_properties(shim/engine/keycap_art.cpp PROPERTIES
     OBJECT_DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/third_party/imgui/misc/fonts/Roboto-Medium.ttf)
-target_include_directories(bbgpu PRIVATE shim shadps4 ${SHADER_INCLUDE} third_party/gcn/include third_party/half/include)
+target_include_directories(bbgpu PRIVATE shim shadps4 ../src ${SHADER_INCLUDE} third_party/gcn/include third_party/half/include)
 # bbport: NVIDIA Streamline SDK headers (MIT), for DLSS Frame Generation (vk_streamline.cpp).
 target_include_directories(bbgpu PRIVATE third_party/streamline/include)
 target_compile_definitions(bbgpu PRIVATE BOOST_ASIO_STANDALONE NDEBUG)
@@ -258,7 +256,7 @@ endif()
 target_link_libraries(bbgpu PRIVATE ffx-vulkan::portable ffx-vulkan::fsr4-v07-vulkan
     ffx-vulkan::fsr3-vk-framegeneration-3.1.6) # bbport: frame generation (vk_frame_generation.cpp)
 target_link_libraries(bbgpu PUBLIC Vulkan::Headers fmt::fmt Boost::headers magic_enum::magic_enum
-    tsl::robin_map GPUOpen::VulkanMemoryAllocator PkgConfig::XXHASH PkgConfig::SDL3 PkgConfig::FFMPEG miniz::miniz Zydis::Zydis sirit
+    tsl::robin_map GPUOpen::VulkanMemoryAllocator PkgConfig::XXHASH PkgConfig::SDL3 PkgConfig::OPUS PkgConfig::FFMPEG miniz::miniz Zydis::Zydis sirit
     xbyak::xbyak)
 if (WIN32)
     # Windows headers: no min/max macros, no winsock 1 clash; Windows 10+ APIs (SetThreadDescription).
@@ -407,6 +405,12 @@ target_link_libraries(bb-engine-assets PRIVATE ZLIB::ZLIB)
 if (WIN32)
     target_link_libraries(bb-engine-assets PRIVATE shell32)
 endif()
+add_executable(bb-ui-4k ../tools/engine/ui_4k.cpp shim/hud_gauge.cpp)
+target_include_directories(bb-ui-4k PRIVATE shim)
+target_link_libraries(bb-ui-4k PRIVATE ZLIB::ZLIB PkgConfig::XXHASH)
+if (WIN32)
+    target_link_libraries(bb-ui-4k PRIVATE shell32)
+endif()
 add_executable(menu-assets-test EXCLUDE_FROM_ALL ../tests/test_menu_assets.cpp ${BB_MENU_ASSETS})
 target_include_directories(menu-assets-test PRIVATE ${CMAKE_CURRENT_BINARY_DIR}/include)
 target_compile_options(menu-assets-test PRIVATE -UNDEBUG -Wall -Wextra)
@@ -417,6 +421,15 @@ target_include_directories(option-rows-test PRIVATE ..)
 add_executable(engine-menu-memory-test EXCLUDE_FROM_ALL ../tests/test_engine_menu_memory.cpp shim/engine/menu_memory.cpp)
 target_compile_options(engine-menu-memory-test PRIVATE -UNDEBUG -Wall -Wextra -Werror)
 target_include_directories(engine-menu-memory-test PRIVATE ..)
+add_executable(shared-progress-test EXCLUDE_FROM_ALL ../tests/test_shared_progress.cpp)
+target_compile_options(shared-progress-test PRIVATE -UNDEBUG -Wall -Wextra -Werror)
+target_include_directories(shared-progress-test PRIVATE ..)
+add_executable(party-death-test EXCLUDE_FROM_ALL ../tests/test_party_death.cpp)
+target_compile_options(party-death-test PRIVATE -UNDEBUG -Wall -Wextra -Werror)
+target_include_directories(party-death-test PRIVATE ..)
+add_executable(kept-travel-test EXCLUDE_FROM_ALL ../tests/test_kept_travel.cpp)
+target_compile_options(kept-travel-test PRIVATE -UNDEBUG -Wall -Wextra -Werror)
+target_include_directories(kept-travel-test PRIVATE ..)
 add_executable(rebirth-cost-test EXCLUDE_FROM_ALL ../tests/test_rebirth_cost.cpp)
 target_compile_options(rebirth-cost-test PRIVATE -UNDEBUG -Wall -Wextra -Werror)
 target_include_directories(rebirth-cost-test PRIVATE ..)

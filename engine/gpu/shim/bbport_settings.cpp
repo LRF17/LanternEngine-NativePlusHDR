@@ -156,6 +156,16 @@ void Set(Values& v, const std::string& key, const std::string& value) {
     } else if (key == "debug_view") {
     } else if (key == "show_fps") {
         v.show_fps = i != 0;
+    } else if (key == "voice_enabled") {
+        v.voice_enabled = i != 0;
+    } else if (key == "voice_push_to_talk") {
+        v.voice_push_to_talk = i != 0;
+    } else if (key == "voice_mic_muted") {
+        v.voice_mic_muted = i != 0;
+    } else if (key == "voice_talk_key") {
+        if (i != 0 && i > -6 && i < 512) v.voice_talk_key = i;
+    } else if (key == "voice_volume") {
+        v.voice_volume = Clamp(f, 0.0f, 5.0f);
     } else if (key == "show_fps_rate") {
         v.show_fps_rate = i != 0;
     } else if (key == "show_fps_frame_time") {
@@ -498,13 +508,18 @@ void Load() {
                             v.optiscaler_sync_submit};
 }
 
-void ConfigureUpscalerSupport(bool fsr4, bool fsr411, bool dlss) {
+void ConfigureUpscalerSupport(bool fsr4, bool fsr411, bool dlss, bool fsr_sdk) {
     auto& v = Get();
     v.fsr4_supported = fsr4;
     v.fsr411_supported = fsr4 && fsr411;
     v.dlss_supported = dlss;
+    v.fsr_sdk_supported = fsr_sdk;
     const int requested = v.upscaler;
-    if (requested == UpscalerDlss && !dlss) {
+    if (requested == UpscalerFsr && !fsr_sdk) {
+        v.fsr4_problem = "FSR needs the AMD FSR SDK files (engine/fsr_sdk); using FSR 3.1";
+        std::printf("Upscaler: fsr unavailable (AMD FSR SDK files missing or GPU unsupported); falling back to FSR 3.1 before the first frame\n");
+        v.upscaler = UpscalerFsr3;
+    } else if (requested == UpscalerDlss && !dlss) {
         v.fsr4_problem = "DLSS needs an NVIDIA RTX GPU, its driver's NGX and nvngx_dlss; using FSR 3.1";
         std::printf("Upscaler: dlss unavailable; falling back to FSR 3.1 before the first frame\n");
         v.upscaler = UpscalerFsr3;
@@ -576,6 +591,11 @@ void Save() {
     put("fsr3_accumulation", fixed(v.fsr3_accumulation, 3));
     put("fsr3_min_disocclusion", fixed(v.fsr3_min_disocclusion, 3));
     put("show_fps", flag(v.show_fps));
+    put("voice_enabled", flag(v.voice_enabled));
+    put("voice_push_to_talk", flag(v.voice_push_to_talk));
+    put("voice_mic_muted", flag(v.voice_mic_muted));
+    put("voice_talk_key", std::to_string(v.voice_talk_key.load()));
+    put("voice_volume", fixed(v.voice_volume, 2));
     put("show_fps_rate", flag(v.show_fps_rate));
     put("show_fps_frame_time", flag(v.show_fps_frame_time));
     put("show_fps_upscaler", flag(v.show_fps_upscaler));
@@ -778,7 +798,7 @@ const char* DlssPresetText(int preset) {
 
 const char* UpscalerName(int upscaler) {
     static constexpr const char* names[UpscalerCount] = {"off", "fsr3", "fsr4", "fsr411", "taa",
-                                                                  "dlss"};
+                                                                  "dlss", "fsr"};
     return names[std::clamp(upscaler, 0, UpscalerCount - 1)];
 }
 
