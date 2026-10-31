@@ -5757,10 +5757,10 @@ index 65fb22f..8e38232 100644
      std::optional<const Shader::Gcn::FetchShaderData> fetch_shader{};
 diff --git a/gpu/shadps4/video_core/renderer_vulkan/vk_hdr_channel.cpp b/gpu/shadps4/video_core/renderer_vulkan/vk_hdr_channel.cpp
 new file mode 100644
-index 0000000..a4ed7df
+index 0000000..953e99b
 --- /dev/null
 +++ b/gpu/shadps4/video_core/renderer_vulkan/vk_hdr_channel.cpp
-@@ -0,0 +1,632 @@
+@@ -0,0 +1,634 @@
 +// SPDX-FileCopyrightText: Copyright 2026 bbport
 +// SPDX-License-Identifier: GPL-2.0-or-later
 +
@@ -6158,11 +6158,13 @@ index 0000000..a4ed7df
 +}
 +
 +// The chain's targets, 8-bit RGBA: 1920x1080 (the registers give the height padded to whole
-+// 8-row tiles), or with the startup patch the patched render size (padded, e.g. 3840x2176).
++// 8-row tiles), or with the startup patch the patched render size, padded: the width to a
++// multiple of 128 (1708 in 1792, the scene of 1440p with DLSS or FSR Quality), the height to 64
++// (3840x2176).
 +bool ChainSize(u32 width, u32 height) {
 +    const auto [rw, rh] = FixedRenderSize();
 +    if (rw != 0) {
-+        return width >= rw && width < rw + 64 && height >= rh && height < rh + 64;
++        return width >= rw && width < rw + 128 && height >= rh && height < rh + 64;
 +    }
 +    return width == 1920 && height >= 1080 && height <= 1088;
 +}
@@ -8797,7 +8799,7 @@ index 42d1d54..f0c03a6 100644
 +
 +namespace Vulkan { bool TemporalUpscaler::UiComposed() const { return Scaled() || HdrChannel::Native16(); } }
 diff --git a/gpu/shadps4/video_core/renderer_vulkan/vk_temporal_upscaler.h b/gpu/shadps4/video_core/renderer_vulkan/vk_temporal_upscaler.h
-index acec36c..fdad67a 100644
+index acec36c..cddbe6e 100644
 --- a/gpu/shadps4/video_core/renderer_vulkan/vk_temporal_upscaler.h
 +++ b/gpu/shadps4/video_core/renderer_vulkan/vk_temporal_upscaler.h
 @@ -137,8 +137,13 @@ public:
@@ -8814,13 +8816,17 @@ index acec36c..fdad67a 100644
      /// BB_PRESENT_DUMP_TRIGGER: whether this presented frame is to be saved (consumes the trigger).
      bool PresentDumpDue();
      /// Saves `image` (General layout, 4 bytes a pixel) as present_<w>x<h> in BB_DUMP_DIR.
-@@ -172,8 +177,8 @@ private:
-     /// (a 1916x1078 scene in 1916x1080 targets).
+@@ -169,11 +174,11 @@ private:
+     /// Render size below the scaled-preset output size (the resolution patch is on).
+     [[nodiscard]] bool Scaled() const;
+     /// A target of the patched render size: the game allocates it with aligned dimensions
+-    /// (a 1916x1078 scene in 1916x1080 targets).
++    /// (a 1916x1078 scene in 1916x1080 targets, a 1708x960 one in 1792x960: widths to 128).
      [[nodiscard]] bool RenderTarget(u32 w, u32 h) const {
          if (!scaled_session) return w == 1920 && h == 1080;
 -        return w >= render_width && h >= render_height && w < render_width + 8 &&
 -               h < render_height + 8;
-+        return w >= render_width && h >= render_height && w < render_width + 64 &&
++        return w >= render_width && h >= render_height && w < render_width + 128 &&
 +               h < render_height + 64;
      }
      /// bbport: native HDR output: the game's tonemapped frame (the UI target): RGBA8 of the
