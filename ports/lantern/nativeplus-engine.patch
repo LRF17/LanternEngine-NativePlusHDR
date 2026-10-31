@@ -5757,10 +5757,10 @@ index 65fb22f..8e38232 100644
      std::optional<const Shader::Gcn::FetchShaderData> fetch_shader{};
 diff --git a/gpu/shadps4/video_core/renderer_vulkan/vk_hdr_channel.cpp b/gpu/shadps4/video_core/renderer_vulkan/vk_hdr_channel.cpp
 new file mode 100644
-index 0000000..12716fb
+index 0000000..20551dd
 --- /dev/null
 +++ b/gpu/shadps4/video_core/renderer_vulkan/vk_hdr_channel.cpp
-@@ -0,0 +1,644 @@
+@@ -0,0 +1,724 @@
 +// SPDX-FileCopyrightText: Copyright 2026 bbport
 +// SPDX-License-Identifier: GPL-2.0-or-later
 +
@@ -5780,6 +5780,10 @@ index 0000000..12716fb
 +#include "common/assert.h"
 +#include "common/logging/log.h"
 +#include "core/emulator_settings.h"
++#include "shader_recompiler/backend/bindings.h"
++#include "shader_recompiler/info.h"
++#include "shader_recompiler/profile.h"
++#include "shader_recompiler/runtime_info.h"
 +#include "video_core/host_shaders/bb_color_grading_frag.h"
 +#include "video_core/host_shaders/bb_color_grading_hw_frag.h"
 +#include "video_core/host_shaders/bb_composite_hdr_frag.h"
@@ -5944,65 +5948,145 @@ index 0000000..12716fb
 +std::mutex composite_mutex;
 +std::unordered_map<u64, CompositeShader>* composites = new std::unordered_map<u64, CompositeShader>;
 +
-+/// A game pixel shader input: its location, and whether the shader reads it per vertex
-+/// (fs_in_attrN_p, the recompiler's manual interpolation) or as the GPU interpolates it
-+/// (fs_in_attrN: Lantern's hardware interpolation pass, or no fragment-shader barycentrics).
++/// A game pixel shader input: its location, and whether the shader reads it per vertex (the
++/// recompiler's manual interpolation, fs_in_attrN_p) or as the GPU interpolates it (fs_in_attrN:
++/// Lantern's hardware interpolation pass, or no fragment-shader barycentrics).
 +struct GameInput {
 +    u32 location;
 +    bool per_vertex;
 +};
 +
-+std::optional<GameInput> FindInput(const SpvInterface& in, int attr) {
-+    if (const auto location = in.Location(fmt::format("fs_in_attr{}_p", attr))) {
-+        return GameInput{*location, true};
++/// A game pixel shader's interface, from what it was compiled from rather than from its SPIR-V:
++/// Lantern's compilers (the recompiler's EmitContext, and the lifter, given the same Bindings) bind
++/// its buffers from start.unified, then its images, then its samplers; input N at the location of
++/// its param_index (one further with clip distance emulation); render target N at location N. The
++/// lifter's SPIR-V has no names; both lay a shader out the same (985 shaders of a cache, 0.9.39
++/// beta 26: every binding the lifter declares is the recompiler's, of the same kind).
++struct GameLayout {
++    std::vector<u32> buffers; ///< bindings
++    u32 first_buffer = 0;     ///< the first buffer's index (Bindings::buffer: ubo_N's N)
++    bool uniform = false;     ///< a uniform buffer (else storage buffers, the legacy compiler's)
++    std::vector<u32> images, samplers;
++    std::vector<std::optional<GameInput>> inputs; ///< by attribute (fs_in_attrN)
++    bool color0 = false;       ///< writes render target 0 (frag_color0, location 0)
++    bool mip_bindings = false; ///< an image with a binding per mip level: not laid out here
++
++    std::optional<GameInput> Input(int attr) const {
++        return attr >= 0 && size_t(attr) < inputs.size() ? inputs[attr] : std::nullopt;
 +    }
-+    if (const auto location = in.Location(fmt::format("fs_in_attr{}", attr))) {
-+        return GameInput{*location, false};
++    /// The binding of the game's fs_imgN or fs_sampN (the names of bbport's shaders too).
++    std::optional<u32> Binding(std::string_view name) const {
++        const auto at = [&](std::string_view prefix,
++                            const std::vector<u32>& list) -> std::optional<u32> {
++            if (!name.starts_with(prefix)) {
++                return std::nullopt;
++            }
++            const size_t index =
++                std::strtoul(std::string(name.substr(prefix.size())).c_str(), nullptr, 10);
++            return index < list.size() ? std::optional<u32>{list[index]} : std::nullopt;
++        };
++        const auto image = at("fs_img", images);
++        return image ? image : at("fs_samp", samplers);
 +    }
-+    return std::nullopt;
++};
++
++GameLayout ReadLayout(const HdrChannel::GameShader& game) {
++    GameLayout out;
++    u32 binding = game.start.unified;
++    out.first_buffer = game.start.buffer;
++    for (const auto& buffer : game.info.buffers) {
++        out.buffers.push_back(binding++);
++        out.uniform = buffer.is_uniform;
++    }
++    for (const auto& image : game.info.images) {
++        if (image.mip_fallback_mode == Shader::MipStorageFallbackMode::DynamicIndex) {
++            out.mip_bindings = true;
++            return out;
++        }
++        out.images.push_back(binding++);
++    }
++    for (size_t i = 0; i < game.info.samplers.size(); ++i) {
++        out.samplers.push_back(binding++);
++    }
++    const auto& fs = game.runtime.hw.fs;
++    const bool clip = fs.clip_distance_emulation;
++    const s32 count = std::min<s32>(s32(fs.num_inputs) - (clip ? 1 : 0), s32(fs.inputs.size()));
++    for (s32 i = 0; i < count; ++i) {
++        const auto& input = fs.inputs[i];
++        if (input.IsDefault()) {
++            out.inputs.emplace_back();
++            continue;
++        }
++        out.inputs.push_back(GameInput{
++            u32(input.param_index) + (clip ? 1u : 0u),
++            game.info.fs_interpolation[i].primary == Shader::Qualifier::PerVertex &&
++                game.profile.supports_fragment_shader_barycentric});
++    }
++    out.color0 = game.info.stores.GetAny(Shader::IR::Attribute::RenderTarget0);
++    return out;
++}
++
++/// The recompiler names what it declares (the lifter does not): where it does, its names must
++/// agree with the layout, or Lantern's compilers no longer lay shaders out as ReadLayout does.
++void CheckLayout(u64 pgm_hash, const GameLayout& layout, std::span<const u32> spv) {
++    const SpvInterface in = ReadInterface(spv);
++    if (in.ids.empty()) {
++        return;
++    }
++    std::string differs;
++    const auto check = [&](const std::string& name, std::optional<u32> expected, bool location) {
++        const auto found = location ? in.Location(name) : in.Binding(name);
++        if (found && found != expected) {
++            differs += fmt::format(" {} {} (layout {})", name, *found,
++                                   expected ? s64(*expected) : s64(-1));
++        }
++    };
++    for (size_t i = 0; i < layout.buffers.size(); ++i) {
++        const u32 index = layout.first_buffer + u32(i);
++        check(fmt::format("{}_{}", layout.uniform ? "ubo" : "ssbo", index), layout.buffers[i],
++              false);
++    }
++    for (size_t i = 0; i < layout.images.size(); ++i) {
++        check(fmt::format("fs_img{}", i), layout.images[i], false);
++    }
++    for (size_t i = 0; i < layout.samplers.size(); ++i) {
++        check(fmt::format("fs_samp{}", i), layout.samplers[i], false);
++    }
++    for (size_t i = 0; i < layout.inputs.size(); ++i) {
++        const auto& input = layout.inputs[i];
++        const auto location = input ? std::optional<u32>{input->location} : std::nullopt;
++        check(fmt::format("fs_in_attr{}", i), location, true);
++        check(fmt::format("fs_in_attr{}_p", i), location, true);
++    }
++    check("frag_color0", layout.color0 ? std::optional<u32>{0u} : std::nullopt, true);
++    if (!differs.empty()) {
++        LOG_WARNING(Render_Vulkan, "Native+: shader {:08x}: its names and its layout differ:{}",
++                    u32(pgm_hash), differs);
++    }
 +}
 +
 +/// The variant's HDR shader, or why there is none. `per_vertex` says which build of it.
-+std::optional<std::vector<u32>> BuildComposite(const TonemapVariant& v, std::span<const u32> game,
++std::optional<std::vector<u32>> BuildComposite(const TonemapVariant& v, const GameLayout& in,
 +                                               std::string* why, bool* per_vertex) {
-+    const SpvInterface in = ReadInterface(game);
-+    // The constant buffer: the game shader's only buffer (several ssbo_N aliases share it): a
-+    // storage buffer from the legacy shader compiler, a uniform buffer (ubo_N) from the native one.
-+    std::optional<u32> buffer_index, buffer_binding;
-+    bool uniform = false;
-+    for (const auto& [name, ids] : in.ids) {
-+        const bool is_ubo = name.rfind("ubo_", 0) == 0;
-+        if (name.rfind("ssbo_", 0) != 0 && !is_ubo) {
-+            continue;
-+        }
-+        const u32 index = u32(std::strtoul(name.c_str() + (is_ubo ? 4 : 5), nullptr, 10));
-+        if ((buffer_index && *buffer_index != index) || (buffer_index && uniform != is_ubo)) {
-+            *why = "several buffers";
-+            return std::nullopt;
-+        }
-+        buffer_index = index;
-+        buffer_binding = in.Binding(name);
-+        uniform = is_ubo;
-+    }
-+    if (!buffer_index || !buffer_binding) {
-+        *why = "no constant buffer";
++    // The constant buffer: the game shader's only buffer: a uniform buffer from the native
++    // shader compiler, a storage buffer from the legacy one.
++    if (in.buffers.size() != 1) {
++        *why = in.buffers.empty() ? "no constant buffer" : "several buffers";
 +        return std::nullopt;
 +    }
-+    if (in.ids.contains(fmt::format("fs_img{}", int(v.img_scene))) == false ||
-+        in.ids.contains(fmt::format("fs_samp{}", int(v.img_scene))) == false) {
++    if (in.mip_bindings) {
++        *why = "an image with a binding per mip level";
++        return std::nullopt;
++    }
++    const std::optional<u32> buffer_index = in.first_buffer, buffer_binding = in.buffers[0];
++    const bool uniform = in.uniform;
++    if (size_t(v.img_scene) >= in.images.size() || size_t(v.img_scene) >= in.samplers.size()) {
 +        *why = "unexpected images";
 +        return std::nullopt;
 +    }
 +    // One sampler per image, in the same order (each fetch uses its own S#).
-+    u32 images = 0, samplers = 0;
-+    while (in.ids.contains(fmt::format("fs_img{}", images))) {
-+        ++images;
-+    }
-+    while (in.ids.contains(fmt::format("fs_samp{}", samplers))) {
-+        ++samplers;
-+    }
-+    if (images != samplers) {
-+        *why = fmt::format("{} images but {} samplers", images, samplers);
++    if (in.images.size() != in.samplers.size()) {
++        *why = fmt::format("{} images but {} samplers", in.images.size(), in.samplers.size());
 +        return std::nullopt;
 +    }
 +    const auto image = [&](int index) { return in.Binding(fmt::format("fs_img{}", index)); };
@@ -6010,10 +6094,10 @@ index 0000000..12716fb
 +    // Inputs: per vertex when the game's shader reads all of them so (the HDR shader then computes
 +    // the game's values bit for bit); else the build that reads them as the GPU interpolates them,
 +    // at the same locations (the game's vertex shader writes them the same either way).
-+    const auto scene_in = FindInput(in, v.attr_scene);
-+    const auto mult_in = FindInput(in, v.attr_mult);
-+    const auto bloom_in = FindInput(in, v.attr_bloom);
-+    const auto vig_in = v.attr_vig >= 0 ? FindInput(in, v.attr_vig) : scene_in;
++    const auto scene_in = in.Input(v.attr_scene);
++    const auto mult_in = in.Input(v.attr_mult);
++    const auto bloom_in = in.Input(v.attr_bloom);
++    const auto vig_in = v.attr_vig >= 0 ? in.Input(v.attr_vig) : scene_in;
 +    const auto bindings = {image(v.img_scene), image(v.img_mult), image(v.img_bloom),
 +                           sampler(v.img_scene), sampler(v.img_mult), sampler(v.img_bloom)};
 +    if (std::ranges::any_of(bindings, [](const auto& b) { return !b.has_value(); })) {
@@ -6084,17 +6168,20 @@ index 0000000..12716fb
 +constexpr const char* CurveNames[] = {"exp curve", "extended Reinhard", "log curve", "no curve"};
 +} // namespace
 +
-+void HdrChannel::NoteGameShader(u64 pgm_hash, std::span<const u32> spv) {
++void HdrChannel::NoteGameShader(const GameShader& game) {
 +    if (!Native16()) {
 +        return;
 +    }
++    const u64 pgm_hash = game.info.pgm_hash;
 +    const TonemapVariant* v = FindVariant(pgm_hash);
 +    if (!v || !v->standard || v->additive) {
 +        return; // additive variants output HDR for a later pass: nothing to do here
 +    }
 +    std::string why;
 +    bool per_vertex = false;
-+    auto built = BuildComposite(*v, spv, &why, &per_vertex);
++    const GameLayout layout = ReadLayout(game);
++    CheckLayout(pgm_hash, layout, game.spv);
++    auto built = BuildComposite(*v, layout, &why, &per_vertex);
 +    std::scoped_lock lock{composite_mutex};
 +    auto [it, fresh] = composites->try_emplace(pgm_hash);
 +    if (!built) {
@@ -6179,24 +6266,20 @@ index 0000000..12716fb
 +}
 +} // namespace
 +
-+bool HdrChannel::NeedsNames(u64 pgm_hash) {
-+    const TonemapVariant* v = FindVariant(pgm_hash);
-+    return (v && v->standard && !v->additive) || pgm_hash == ColorGradingHash ||
-+           pgm_hash == 0x57f3b8c2 || pgm_hash == 0xf7229091 || pgm_hash == 0x38d65b32;
-+}
-+
-+bool HdrChannel::MissingNames(u64 pgm_hash, std::span<const u32> spv) {
-+    return NeedsNames(pgm_hash) && ReadInterface(spv).ids.empty();
-+}
-+
-+std::vector<u32> HdrChannel::ChainReplacement(u64 pgm_hash, std::span<const u32> game) {
++std::vector<u32> HdrChannel::ChainReplacement(const GameShader& game) {
 +    if (!Native16()) {
++        return {};
++    }
++    const u64 pgm_hash = game.info.pgm_hash;
++    if (pgm_hash != 0x57f3b8c2 && pgm_hash != 0xf7229091 && pgm_hash != ColorGradingHash &&
++        pgm_hash != 0x38d65b32) {
 +        return {};
 +    }
 +    // The game shader's input fs_in_attr0 (none for the display copy): per vertex, the build that
 +    // reads it so; else the one that reads it as the GPU interpolates it (bb_inputs.glsl).
-+    const SpvInterface in = ReadInterface(game);
-+    const auto input = FindInput(in, 0);
++    const GameLayout in = ReadLayout(game);
++    CheckLayout(pgm_hash, in, game.spv);
++    const auto input = in.Input(0);
 +    const bool per_vertex = input && input->per_vertex;
 +    const auto pick = [per_vertex](std::span<const u32> manual, std::span<const u32> hw) {
 +        return per_vertex ? std::vector<u32>(manual.begin(), manual.end())
@@ -6227,11 +6310,8 @@ index 0000000..12716fb
 +        const auto value = in.Binding(name);
 +        ok = ok && value && SetDecoration(spv, ours, name, SpvDecorationBinding, *value);
 +    }
-+    if (const auto color = in.Location("frag_color0")) {
-+        ok = ok && SetDecoration(spv, ours, "frag_color0", SpvDecorationLocation, *color);
-+    } else {
-+        ok = false;
-+    }
++    ok = ok && !in.mip_bindings && in.color0 &&
++         SetDecoration(spv, ours, "frag_color0", SpvDecorationLocation, 0);
 +    if (reads_input) {
 +        // Ours is called fs_in_attr0 in both builds.
 +        ok = ok && input &&
@@ -6407,10 +6487,10 @@ index 0000000..12716fb
 +} // namespace Vulkan
 diff --git a/gpu/shadps4/video_core/renderer_vulkan/vk_hdr_channel.h b/gpu/shadps4/video_core/renderer_vulkan/vk_hdr_channel.h
 new file mode 100644
-index 0000000..0a3cedd
+index 0000000..77e3415
 --- /dev/null
 +++ b/gpu/shadps4/video_core/renderer_vulkan/vk_hdr_channel.h
-@@ -0,0 +1,113 @@
+@@ -0,0 +1,126 @@
 +// SPDX-FileCopyrightText: Copyright 2026 bbport
 +// SPDX-License-Identifier: GPL-2.0-or-later
 +//
@@ -6434,6 +6514,15 @@ index 0000000..0a3cedd
 +#include "video_core/renderer_vulkan/vk_common.h"
 +#include "video_core/texture_cache/image.h"
 +
++namespace Shader {
++struct Info;
++struct RuntimeInfo;
++struct Profile;
++namespace Backend {
++struct Bindings;
++}
++} // namespace Shader
++
 +namespace Vulkan {
 +
 +class Instance;
@@ -6441,6 +6530,16 @@ index 0000000..0a3cedd
 +
 +class HdrChannel {
 +public:
++    /// A game pixel shader as compiled: what it was compiled from (`start`: its first bindings),
++    /// which gives its interface (the recompiler and the lifter lay it out the same way, and only
++    /// the recompiler names it), and its SPIR-V, the game's own.
++    struct GameShader {
++        const Shader::Info& info;
++        const Shader::RuntimeInfo& runtime;
++        const Shader::Profile& profile;
++        const Shader::Backend::Bindings& start;
++        std::span<const u32> spv;
++    };
 +
 +    // ---- BB_HDR_TONEMAP=5: the 16-bit chain (docs/HDR.md, "Chantier 16 bits") ----------------
 +    // The game's 8-bit targets after its composite (1920x1080 RGBA8: the composite's target, its
@@ -6484,14 +6583,7 @@ index 0000000..0a3cedd
 +    static constexpr u64 GlowAddHash = 0x8c08444c;
 +    /// Mode 5: bbport's version of a game shader of the chain (glow source, display copy) with
 +    /// the game shader's bindings and locations, or empty to keep the game's.
-+    static std::vector<u32> ChainReplacement(u64 pgm_hash, std::span<const u32> game);
-+    /// The game shaders Native+ reads by their names (OpName: ubo_N, fs_img0, frag_color0...):
-+    /// the composite variants and the chain passes. The lifter (LANTERN_LIFTER) writes no names,
-+    /// so these keep the recompiler's SPIR-V, in every mode (one cache serves them all).
-+    static bool NeedsNames(u64 pgm_hash);
-+    /// A cached SPIR-V of one of those without names (the lifter's, from an engine before
-+    /// 0.9.39.1 beta 3 or Lantern's own build): left out, it compiles again in play.
-+    static bool MissingNames(u64 pgm_hash, std::span<const u32> spv);
++    static std::vector<u32> ChainReplacement(const GameShader& game);
 +    /// Mode 5 test (in-game menu, "Log the 16-bit chain"): one frame, from a display copy to the
 +    /// next, where every access to the chain's targets is logged (HDR trace lines).
 +    static bool Trace();
@@ -6500,10 +6592,11 @@ index 0000000..0a3cedd
 +    /// Whether a texture cache image is one of the chain's 16-bit targets.
 +    static bool ChainImage(VAddr address, u32 width, u32 height, vk::Format format);
 +
-+    /// Generic pass: called with the game's SPIR-V of every shader bbport compiles or loads. For
-+    /// a composite variant, builds hdr/bb_composite_hdr.frag with that variant's interface
-+    /// (descriptor bindings, input locations, constant buffer) and options.
-+    static void NoteGameShader(u64 pgm_hash, std::span<const u32> spv);
++    /// Generic pass: called for every pixel shader bbport compiles or loads. For a composite
++    /// variant, builds
++    /// hdr/bb_composite_hdr.frag with that variant's interface (descriptor bindings, input
++    /// locations, constant buffer) and options.
++    static void NoteGameShader(const GameShader& game);
 +    /// Generic pass: the HDR fragment shader for this composite variant (null if none).
 +    static vk::ShaderModule CompositeModule(const Instance& instance, u64 pgm_hash);
 +    /// Peak luminance in nits (BB_HDR_PEAK_NITS, 1000 by default, 200..10000).
@@ -6545,7 +6638,7 @@ index 634a9cd..706ca6c 100644
      return s.hdr_output.load(std::memory_order_relaxed) != BbSettings::HdrOutputOff &&
             s.hdr_mode.load(std::memory_order_relaxed) == BbSettings::HdrModeNative;
 diff --git a/gpu/shadps4/video_core/renderer_vulkan/vk_pipeline_cache.cpp b/gpu/shadps4/video_core/renderer_vulkan/vk_pipeline_cache.cpp
-index 6d0c678..edf3f85 100644
+index 6d0c678..09b54a0 100644
 --- a/gpu/shadps4/video_core/renderer_vulkan/vk_pipeline_cache.cpp
 +++ b/gpu/shadps4/video_core/renderer_vulkan/vk_pipeline_cache.cpp
 @@ -12,6 +12,8 @@
@@ -6629,17 +6722,7 @@ index 6d0c678..edf3f85 100644
          color_buffer.export_format = regs.color_export_format.GetFormat(cb);
          color_buffer.swizzle = col_buf.Swizzle();
  
-@@ -1067,7 +1097,8 @@ vk::ShaderModule PipelineCache::CompileModule(Shader::Info& info, Shader::Runtim
-     Shader::Native::StoreState(info, runtime_before, code, perm_idx);
-     const auto binding_before = binding;
-     auto spv = Shader::Backend::SPIRV::EmitSPIRV(profile, runtime_info, ir_program, binding);
--    if (Lifter::GetMode() != Lifter::Mode::Off && !EffectShaders::KeepRecompiled(info)) {
-+    if (Lifter::GetMode() != Lifter::Mode::Off && !EffectShaders::KeepRecompiled(info) &&
-+        !(info.sw_stage == Shader::SwStage::Fragment && HdrChannel::NeedsNames(info.pgm_hash))) {
-         auto lifted = Lifter::Lift(Lifter::MakeInput(info, runtime_before, profile, binding_before, code));
-         if (lifted.ok() && lifted.uses_tone_curve == info.uses_tone_curve) {
-             spv = std::move(lifted.spirv);
-@@ -1077,6 +1108,19 @@ vk::ShaderModule PipelineCache::CompileModule(Shader::Info& info, Shader::Runtim
+@@ -1077,6 +1107,20 @@ vk::ShaderModule PipelineCache::CompileModule(Shader::Info& info, Shader::Runtim
      }
      DumpShader(spv, info.pgm_hash, info.hw_stage, perm_idx, "spv");
  
@@ -6649,8 +6732,9 @@ index 6d0c678..edf3f85 100644
 +    // recompiles share one cache.
 +    std::vector<u32> stored;
 +    if (info.sw_stage == Shader::SwStage::Fragment && HdrChannel::Native16()) {
-+        HdrChannel::NoteGameShader(info.pgm_hash, spv);
-+        auto replacement = HdrChannel::ChainReplacement(info.pgm_hash, spv);
++        const HdrChannel::GameShader game{info, runtime_info, profile, binding_before, spv};
++        HdrChannel::NoteGameShader(game);
++        auto replacement = HdrChannel::ChainReplacement(game);
 +        if (!replacement.empty()) {
 +            stored = std::move(spv);
 +            spv = std::move(replacement);
@@ -6688,7 +6772,7 @@ index 29621d5..a979a13 100644
      if (uses_tone_curve) {
          const Shader::Native::ToneCurvePush tone = ToneCurveParams();
 diff --git a/gpu/shadps4/video_core/renderer_vulkan/vk_pipeline_serialization.cpp b/gpu/shadps4/video_core/renderer_vulkan/vk_pipeline_serialization.cpp
-index b2278ce..9b018dd 100644
+index b2278ce..ddfc8e1 100644
 --- a/gpu/shadps4/video_core/renderer_vulkan/vk_pipeline_serialization.cpp
 +++ b/gpu/shadps4/video_core/renderer_vulkan/vk_pipeline_serialization.cpp
 @@ -22,6 +22,7 @@
@@ -6699,20 +6783,17 @@ index b2278ce..9b018dd 100644
  #include "video_core/renderer_vulkan/vk_shader_util.h"
  
  namespace Serialization {
-@@ -437,7 +438,20 @@ bool PipelineCache::LoadPipelineStage(Serialization::Archive& ar, size_t stage,
-         word += count;
+@@ -438,6 +439,17 @@ bool PipelineCache::LoadPipelineStage(Serialization::Archive& ar, size_t stage,
      }
  
-+    if (HdrChannel::Native16() && program->info.sw_stage == Shader::SwStage::Fragment &&
-+        HdrChannel::MissingNames(program->info.pgm_hash, spv)) {
-+        return false;
-+    }
      auto it = program_cache.find(program->info.pgm_hash);
 +    // Cached composites need the same companion preparation as freshly translated shaders, and the
 +    // chain passes Native+'s replacements: the cache holds the game's own shaders (CompileModule).
 +    if (HdrChannel::Native16() && program->info.sw_stage == Shader::SwStage::Fragment) {
-+        HdrChannel::NoteGameShader(program->info.pgm_hash, spv);
-+        if (auto replacement = HdrChannel::ChainReplacement(program->info.pgm_hash, spv);
++        const HdrChannel::GameShader game{program->info, spec.runtime_info, profile, spec.start,
++                                          spv};
++        HdrChannel::NoteGameShader(game);
++        if (auto replacement = HdrChannel::ChainReplacement(game);
 +            !replacement.empty()) {
 +            spv = std::move(replacement);
 +        }
