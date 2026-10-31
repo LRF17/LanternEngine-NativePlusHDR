@@ -178,7 +178,7 @@ Preset **Off** shows the game's own SDR look in HDR10, as a reference.
 
 - Versions follow Lantern's: **0.9.38.1** is this fork's first release on Lantern 0.9.38,
   **0.9.38.2**, **0.9.38.3** and **0.9.38.4** the next ones; **0.9.39.1** the first on Lantern 0.9.39
-  (its betas on Lantern 0.9.39's betas). Betas (`0.9.39.1-beta.2`) come from the
+  (its betas on Lantern 0.9.39's betas). Betas (`0.9.39.1-beta.3`) come from the
   `lantern-Native+HDR-beta` branch, releases from `lantern-Native+HDR`.
 - The launcher updates itself from this fork's releases.
 - **Updating from an earlier version**: your settings are kept. Settings that no longer exist

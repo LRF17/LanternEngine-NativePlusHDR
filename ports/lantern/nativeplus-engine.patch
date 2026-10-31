@@ -5757,10 +5757,10 @@ index 65fb22f..8e38232 100644
      std::optional<const Shader::Gcn::FetchShaderData> fetch_shader{};
 diff --git a/gpu/shadps4/video_core/renderer_vulkan/vk_hdr_channel.cpp b/gpu/shadps4/video_core/renderer_vulkan/vk_hdr_channel.cpp
 new file mode 100644
-index 0000000..953e99b
+index 0000000..12716fb
 --- /dev/null
 +++ b/gpu/shadps4/video_core/renderer_vulkan/vk_hdr_channel.cpp
-@@ -0,0 +1,634 @@
+@@ -0,0 +1,644 @@
 +// SPDX-FileCopyrightText: Copyright 2026 bbport
 +// SPDX-License-Identifier: GPL-2.0-or-later
 +
@@ -6179,6 +6179,16 @@ index 0000000..953e99b
 +}
 +} // namespace
 +
++bool HdrChannel::NeedsNames(u64 pgm_hash) {
++    const TonemapVariant* v = FindVariant(pgm_hash);
++    return (v && v->standard && !v->additive) || pgm_hash == ColorGradingHash ||
++           pgm_hash == 0x57f3b8c2 || pgm_hash == 0xf7229091 || pgm_hash == 0x38d65b32;
++}
++
++bool HdrChannel::MissingNames(u64 pgm_hash, std::span<const u32> spv) {
++    return NeedsNames(pgm_hash) && ReadInterface(spv).ids.empty();
++}
++
 +std::vector<u32> HdrChannel::ChainReplacement(u64 pgm_hash, std::span<const u32> game) {
 +    if (!Native16()) {
 +        return {};
@@ -6397,10 +6407,10 @@ index 0000000..953e99b
 +} // namespace Vulkan
 diff --git a/gpu/shadps4/video_core/renderer_vulkan/vk_hdr_channel.h b/gpu/shadps4/video_core/renderer_vulkan/vk_hdr_channel.h
 new file mode 100644
-index 0000000..0f3b3af
+index 0000000..0a3cedd
 --- /dev/null
 +++ b/gpu/shadps4/video_core/renderer_vulkan/vk_hdr_channel.h
-@@ -0,0 +1,106 @@
+@@ -0,0 +1,113 @@
 +// SPDX-FileCopyrightText: Copyright 2026 bbport
 +// SPDX-License-Identifier: GPL-2.0-or-later
 +//
@@ -6475,6 +6485,13 @@ index 0000000..0f3b3af
 +    /// Mode 5: bbport's version of a game shader of the chain (glow source, display copy) with
 +    /// the game shader's bindings and locations, or empty to keep the game's.
 +    static std::vector<u32> ChainReplacement(u64 pgm_hash, std::span<const u32> game);
++    /// The game shaders Native+ reads by their names (OpName: ubo_N, fs_img0, frag_color0...):
++    /// the composite variants and the chain passes. The lifter (LANTERN_LIFTER) writes no names,
++    /// so these keep the recompiler's SPIR-V, in every mode (one cache serves them all).
++    static bool NeedsNames(u64 pgm_hash);
++    /// A cached SPIR-V of one of those without names (the lifter's, from an engine before
++    /// 0.9.39.1 beta 3 or Lantern's own build): left out, it compiles again in play.
++    static bool MissingNames(u64 pgm_hash, std::span<const u32> spv);
 +    /// Mode 5 test (in-game menu, "Log the 16-bit chain"): one frame, from a display copy to the
 +    /// next, where every access to the chain's targets is logged (HDR trace lines).
 +    static bool Trace();
@@ -6528,7 +6545,7 @@ index 634a9cd..706ca6c 100644
      return s.hdr_output.load(std::memory_order_relaxed) != BbSettings::HdrOutputOff &&
             s.hdr_mode.load(std::memory_order_relaxed) == BbSettings::HdrModeNative;
 diff --git a/gpu/shadps4/video_core/renderer_vulkan/vk_pipeline_cache.cpp b/gpu/shadps4/video_core/renderer_vulkan/vk_pipeline_cache.cpp
-index 6d0c678..e5df20d 100644
+index 6d0c678..edf3f85 100644
 --- a/gpu/shadps4/video_core/renderer_vulkan/vk_pipeline_cache.cpp
 +++ b/gpu/shadps4/video_core/renderer_vulkan/vk_pipeline_cache.cpp
 @@ -12,6 +12,8 @@
@@ -6612,7 +6629,17 @@ index 6d0c678..e5df20d 100644
          color_buffer.export_format = regs.color_export_format.GetFormat(cb);
          color_buffer.swizzle = col_buf.Swizzle();
  
-@@ -1077,6 +1107,19 @@ vk::ShaderModule PipelineCache::CompileModule(Shader::Info& info, Shader::Runtim
+@@ -1067,7 +1097,8 @@ vk::ShaderModule PipelineCache::CompileModule(Shader::Info& info, Shader::Runtim
+     Shader::Native::StoreState(info, runtime_before, code, perm_idx);
+     const auto binding_before = binding;
+     auto spv = Shader::Backend::SPIRV::EmitSPIRV(profile, runtime_info, ir_program, binding);
+-    if (Lifter::GetMode() != Lifter::Mode::Off && !EffectShaders::KeepRecompiled(info)) {
++    if (Lifter::GetMode() != Lifter::Mode::Off && !EffectShaders::KeepRecompiled(info) &&
++        !(info.sw_stage == Shader::SwStage::Fragment && HdrChannel::NeedsNames(info.pgm_hash))) {
+         auto lifted = Lifter::Lift(Lifter::MakeInput(info, runtime_before, profile, binding_before, code));
+         if (lifted.ok() && lifted.uses_tone_curve == info.uses_tone_curve) {
+             spv = std::move(lifted.spirv);
+@@ -1077,6 +1108,19 @@ vk::ShaderModule PipelineCache::CompileModule(Shader::Info& info, Shader::Runtim
      }
      DumpShader(spv, info.pgm_hash, info.hw_stage, perm_idx, "spv");
  
@@ -6632,7 +6659,7 @@ index 6d0c678..e5df20d 100644
      vk::ShaderModule module;
  
      auto patch = GetShaderPatch(info.pgm_hash, info.hw_stage, perm_idx, "spv");
-@@ -1094,7 +1137,8 @@ vk::ShaderModule PipelineCache::CompileModule(Shader::Info& info, Shader::Runtim
+@@ -1094,7 +1138,8 @@ vk::ShaderModule PipelineCache::CompileModule(Shader::Info& info, Shader::Runtim
          module = CompileSPV(spv, instance.GetDevice());
      }
  
@@ -6661,7 +6688,7 @@ index 29621d5..a979a13 100644
      if (uses_tone_curve) {
          const Shader::Native::ToneCurvePush tone = ToneCurveParams();
 diff --git a/gpu/shadps4/video_core/renderer_vulkan/vk_pipeline_serialization.cpp b/gpu/shadps4/video_core/renderer_vulkan/vk_pipeline_serialization.cpp
-index b2278ce..dc5b405 100644
+index b2278ce..9b018dd 100644
 --- a/gpu/shadps4/video_core/renderer_vulkan/vk_pipeline_serialization.cpp
 +++ b/gpu/shadps4/video_core/renderer_vulkan/vk_pipeline_serialization.cpp
 @@ -22,6 +22,7 @@
@@ -6672,9 +6699,14 @@ index b2278ce..dc5b405 100644
  #include "video_core/renderer_vulkan/vk_shader_util.h"
  
  namespace Serialization {
-@@ -438,6 +439,15 @@ bool PipelineCache::LoadPipelineStage(Serialization::Archive& ar, size_t stage,
+@@ -437,7 +438,20 @@ bool PipelineCache::LoadPipelineStage(Serialization::Archive& ar, size_t stage,
+         word += count;
      }
  
++    if (HdrChannel::Native16() && program->info.sw_stage == Shader::SwStage::Fragment &&
++        HdrChannel::MissingNames(program->info.pgm_hash, spv)) {
++        return false;
++    }
      auto it = program_cache.find(program->info.pgm_hash);
 +    // Cached composites need the same companion preparation as freshly translated shaders, and the
 +    // chain passes Native+'s replacements: the cache holds the game's own shaders (CompileModule).
