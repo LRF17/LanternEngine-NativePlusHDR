@@ -3,6 +3,7 @@
 effect fixes and the native menu assets, from the player's own dump. Game files stay local.
 """
 import hashlib
+import shutil
 import os
 import json
 import subprocess
@@ -262,7 +263,62 @@ def prepare_effect_fixes(game, cache, log=print):
     return fixed
 
 
-def prepare_menu_assets(game, elf_path, cache, tool, rebirth=False):
+def prepare_lamp2lamp(game, update, patch, cache):
+    file = Path(patch).read_bytes()
+    if file[:4] != b'L2LP':
+        raise RuntimeError('not a Lamp2Lamp patch file')
+    body = zlib.decompress(file[8:])
+    at = 0
+
+    def take(count):
+        nonlocal at
+        if count > len(body) - at:
+            raise RuntimeError('damaged Lamp2Lamp patch file')
+        at += count
+        return body[at - count:at]
+
+    def u32():
+        return struct.unpack('<I', take(4))[0]
+
+    rows = []
+    state = sha(file)
+    for _ in range(u32()):
+        name = take(struct.unpack('<H', take(2))[0]).decode()
+        wanted_in, wanted_out = take(32).hex(), take(32).hex()
+        u32()
+        ops = []
+        for _ in range(u32()):
+            where, length = u32(), u32()
+            ops.append(take(length) if where == 0xFFFFFFFF else (where, length))
+        source = Path(update) / name if update and (Path(update) / name).is_file() else Path(game) / name
+        if not source.is_file():
+            raise RuntimeError(f'{name} is missing from the game')
+        packed = source.read_bytes()
+        state += sha(packed)
+        rows.append((name, wanted_in, wanted_out, ops, packed))
+    root = Path(cache) / Path(patch).stem
+    stamp = root / 'complete'
+    wanted = sha(state.encode())
+    if stamp.is_file() and stamp.read_text().strip() == wanted:
+        return root.resolve()
+    shutil.rmtree(root, ignore_errors=True)
+    for name, wanted_in, wanted_out, ops, packed in rows:
+        raw = dcx_unpack(packed)
+        if sha(raw) != wanted_in:
+            raise RuntimeError(f'{name} is not the 1.09 file')
+        result = bytearray()
+        for op in ops:
+            result += raw[op[0]:op[0] + op[1]] if isinstance(op, tuple) else op
+        if sha(bytes(result)) != wanted_out:
+            raise RuntimeError(f'{name} does not match the verified result')
+        destination = root / name
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        destination.write_bytes(dcx_pack(bytes(result)))
+    stamp.write_text(wanted + '\n')
+    return root.resolve()
+
+
+def prepare_menu_assets(game, elf_path, cache, tool, rebirth=False, host_title='', guest_title=''):
     """Generate bbhost's native option movie and messages from the player's own dump.
 
     Validate every language, source and cached output together before publishing the
@@ -270,6 +326,9 @@ def prepare_menu_assets(game, elf_path, cache, tool, rebirth=False):
     """
     verify_executable(elf_path)
     game, tool = Path(game), Path(tool)
+    os.environ['BB_PLATE_HOST_TITLE'] = '=' + host_title
+    os.environ['BB_PLATE_GUEST_TITLE'] = '=' + guest_title
+    plates = f'={host_title}|={guest_title}'
     root = Path(cache) / 'pc-menus'
     movie = Path('dvdroot_ps4/menu/optionsetting.gfx')
     sources = [(movie, 'movie')]
@@ -294,7 +353,8 @@ def prepare_menu_assets(game, elf_path, cache, tool, rebirth=False):
         digest = sha(source.read_bytes())
         prior = previous.get('files', {}).get(relative.as_posix(), {})
         current = None
-        if previous.get('generator') == generator and prior.get('input') == digest:
+        if (previous.get('generator') == generator and prior.get('input') == digest and
+                (kind != 'messages' or prior.get('plates') == plates)):
             try:
                 current = sha(destination.read_bytes())
                 if current != prior.get('output'):
@@ -313,7 +373,7 @@ def prepare_menu_assets(game, elf_path, cache, tool, rebirth=False):
                 os.replace(temporary, destination)
             finally:
                 temporary.unlink(missing_ok=True)
-        rows[relative.as_posix()] = {'input': digest, 'output': current}
+        rows[relative.as_posix()] = {'input': digest, 'output': current, 'plates': plates}
     root.mkdir(parents=True, exist_ok=True)
     temporary = manifest_path.with_suffix(f'.{os.getpid()}.tmp')
     temporary.write_text(json.dumps({'generator': generator, 'files': rows}, indent=2), encoding='utf-8')

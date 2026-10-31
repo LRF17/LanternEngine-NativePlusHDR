@@ -10,6 +10,7 @@
 #include <string>
 #include <unordered_set>
 
+#include "engine/gx_records.h"
 #include "common/hash.h"
 #include "common/elf_info.h"
 #include "common/io_file.h"
@@ -27,6 +28,7 @@
 #include "video_core/cache_file.h"
 #include "video_core/renderer_vulkan/pipeline_cache_blob.h"
 #include "video_core/renderer_vulkan/liverpool_to_vk.h"
+#include "video_core/renderer_vulkan/vk_effect_shaders.h"
 #include "video_core/renderer_vulkan/motion_history.h"
 #include "video_core/renderer_vulkan/vk_draw_prep.h"
 #include "video_core/renderer_vulkan/vk_instance.h"
@@ -600,8 +602,44 @@ const GraphicsPipeline* PipelineCache::TryPreparedPipeline(const PreparedDraw& p
     return it != graphics_pipelines.end() ? it->second.get() : nullptr;
 }
 
+bool PipelineCache::RestoreGxPipeline(const GxPipeline& memo) {
+    const auto& regs = liverpool->regs;
+    if (regs.stage_enable.raw != AmdGpu::ShaderStageEnable::VgtStages::Vs) {
+        return false;
+    }
+    const auto restore = [&](Shader::Info* info, HwStage stage) {
+        if (!info) {
+            return true;
+        }
+        const auto* pgm = regs.ProgramForStage(static_cast<u32>(stage));
+        if (!pgm || !pgm->Address<u32*>()) {
+            return false;
+        }
+        const auto params = AmdGpu::GetParams(*pgm);
+        info->pgm_base = params.Base();
+        info->user_data = params.user_data;
+        info->RefreshFlatBuf();
+        return true;
+    };
+    return restore(memo.vertex, HwStage::Vertex) && restore(memo.fragment, HwStage::Fragment);
+}
+
+void PipelineCache::NoteGxRecords() {
+    if (((gx_hits + gx_misses + gx_none) & 0xfffff) != 0xfffff) {
+        return;
+    }
+    std::printf("GX records: pipelines %llu from the record, %llu from the registers and remembered, %llu with no record, "
+                "%zu remembered%s%llu differ\n",
+                static_cast<unsigned long long>(gx_hits), static_cast<unsigned long long>(gx_misses),
+                static_cast<unsigned long long>(gx_none), gx_pipelines.size(),
+                BbEngine::GxRecords::Checked() ? ", checked: " : ", unchecked: ",
+                static_cast<unsigned long long>(gx_differ));
+    std::fflush(stdout);
+}
+
 const GraphicsPipeline* PipelineCache::GetGraphicsPipeline(const DrawIndirectParams params,
-                                                           const PreparedDraw* prepared) {
+                                                           const PreparedDraw* prepared,
+                                                           u64 gx_record) {
     used_prepared = nullptr;
     if (prepared) {
         if (const auto* pipeline = TryPreparedPipeline(*prepared)) {
@@ -609,10 +647,44 @@ const GraphicsPipeline* PipelineCache::GetGraphicsPipeline(const DrawIndirectPar
             return pipeline;
         }
     }
+    const GraphicsPipeline* gx_expected = nullptr;
+    if (BbEngine::GxRecords::On()) {
+        if (!gx_record) {
+            ++gx_none;
+        } else if (const auto memo = gx_pipelines.find(gx_record); memo != gx_pipelines.end()) {
+            ++gx_hits;
+            NoteGxRecords();
+            if (BbEngine::GxRecords::Checked()) {
+                gx_expected = memo->second.pipeline;
+            } else if (RestoreGxPipeline(memo->second)) {
+                return memo->second.pipeline;
+            }
+        } else {
+            ++gx_misses;
+            NoteGxRecords();
+        }
+    }
     sel.draw_indirect_params = params;
     if (!RefreshGraphicsKey(sel)) {
         return nullptr;
     }
+    const auto remember = [&](const GraphicsPipeline* pipeline) {
+        if (gx_expected && gx_expected != pipeline) {
+            ++gx_differ;
+            std::printf("GX records: a record chose another pipeline than the registers (%llu so far)\n",
+                        static_cast<unsigned long long>(gx_differ));
+        }
+        if (gx_record && !gx_expected && !sel.motion &&
+            liverpool->regs.stage_enable.raw == AmdGpu::ShaderStageEnable::VgtStages::Vs) {
+            if (gx_pipelines.size() >= (1u << 16)) {
+                gx_pipelines.clear();
+            }
+            gx_pipelines[gx_record] = {pipeline,
+                                       const_cast<Shader::Info*>(sel.infos[static_cast<u32>(SwStage::Vertex)]),
+                                       const_cast<Shader::Info*>(sel.infos[static_cast<u32>(SwStage::Fragment)])};
+        }
+        return pipeline;
+    };
     const auto [it, is_new] = graphics_pipelines.try_emplace(sel.graphics_key);
     if (is_new) {
         const auto pipeline_hash = std::hash<GraphicsPipelineKey>{}(sel.graphics_key);
@@ -638,7 +710,7 @@ const GraphicsPipeline* PipelineCache::GetGraphicsPipeline(const DrawIndirectPar
         }
         sel.fetch_shader.reset();
     }
-    return it->second.get();
+    return remember(it->second.get());
 }
 
 const ComputePipeline* PipelineCache::GetComputePipeline() {
@@ -995,7 +1067,7 @@ vk::ShaderModule PipelineCache::CompileModule(Shader::Info& info, Shader::Runtim
     Shader::Native::StoreState(info, runtime_before, code, perm_idx);
     const auto binding_before = binding;
     auto spv = Shader::Backend::SPIRV::EmitSPIRV(profile, runtime_info, ir_program, binding);
-    if (Lifter::GetMode() != Lifter::Mode::Off) {
+    if (Lifter::GetMode() != Lifter::Mode::Off && !EffectShaders::KeepRecompiled(info)) {
         auto lifted = Lifter::Lift(Lifter::MakeInput(info, runtime_before, profile, binding_before, code));
         if (lifted.ok() && lifted.uses_tone_curve == info.uses_tone_curve) {
             spv = std::move(lifted.spirv);
@@ -1009,9 +1081,15 @@ vk::ShaderModule PipelineCache::CompileModule(Shader::Info& info, Shader::Runtim
 
     auto patch = GetShaderPatch(info.pgm_hash, info.hw_stage, perm_idx, "spv");
     const bool is_patched = patch && EmulatorSettings.IsPatchShaders();
+    const auto effect_shader = EffectShaders::Replacement(info, profile, binding_before);
+    const auto effect_patch = effect_shader.empty() ? EffectShaders::Patched(info, spv) : std::nullopt;
     if (is_patched) {
         LOG_INFO(Loader, "Loaded patch for {} shader {:#x}", info.hw_stage, info.pgm_hash);
         module = CompileSPV(*patch, instance.GetDevice());
+    } else if (!effect_shader.empty()) {
+        module = CompileSPV(effect_shader, instance.GetDevice());
+    } else if (effect_patch) {
+        module = CompileSPV(*effect_patch, instance.GetDevice());
     } else {
         module = CompileSPV(spv, instance.GetDevice());
     }

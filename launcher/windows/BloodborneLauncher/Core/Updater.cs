@@ -450,6 +450,36 @@ namespace BloodborneLauncher.Core
             }
         }
 
+        private static readonly string[] OldEngineFiles =
+        {
+            "boot.bin", "boot-libc.bin", "analysis.json", "link.json", "libc-link.json", "entry.bin",
+            "content-profile.json", "patches-info.json",
+        };
+
+        private static readonly string[] OldEngineFolders = { "scripts", "tools", "fsr4_shaders" };
+
+        public static int CleanOldFiles(LauncherSettings s, string package)
+        {
+            const string marker = "cleaned_for_engine";
+            if (s.Str(marker) == EngineId || !Directory.Exists(Path.Combine(package, "engine", "out")) ||
+                !File.Exists(Path.Combine(package, "engine", "out", "bb-start.exe")) ||
+                Process.GetProcessesByName("bb-probe").Length > 0)
+                return 0;
+            var removed = 0;
+            foreach (var name in OldEngineFiles)
+            {
+                var file = Path.Combine(package, "engine", "out", name);
+                try { if (File.Exists(file)) { File.Delete(file); removed++; } } catch (Exception) { }
+            }
+            foreach (var name in OldEngineFolders)
+            {
+                var folder = Path.Combine(package, "engine", name);
+                try { if (Directory.Exists(folder)) { Directory.Delete(folder, recursive: true); removed++; } } catch (Exception) { }
+            }
+            s.Set(marker, EngineId);
+            return removed;
+        }
+
         private static void ReplaceSelf(string self, string replacement)
         {
             var aside = self + ".old";

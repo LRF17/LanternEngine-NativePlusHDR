@@ -20,6 +20,7 @@
 #include "bbport_menu_i18n.h"
 #include "bbport_settings.h"
 #include "bbport_usage.h"
+#include "bbport_looks.h"
 #include "engine/cheats.h"
 #include "engine/graphics.h"
 #include "engine/online_fixes.h"
@@ -610,6 +611,49 @@ void PictureSection() {
     }
     slider("Ambient occlusion strength", "Сила затенения (AO)", s.graphics_ao_strength, 0.0f, 3.0f);
     slider("Shadow distance", "Дальность теней", s.graphics_shadow_scale, 0.5f, 4.0f);
+    slider("Indirect lighting strength", "Сила непрямого освещения (GI)", s.graphics_gi_strength, 0.0f, 12.0f);
+    slider("Reflection strength", "Сила отражений", s.graphics_ssr_intensity, 0.0f, 3.0f);
+    slider("Volumetric sunlight strength", "Сила объёмного света", s.graphics_volumetric_intensity, 0.0f, 3.0f);
+    slider("Lamp fog strength", "Сила тумана ламп", s.graphics_point_fog_intensity, 0.0f, 3.0f);
+    for (int e = BbSettings::EffectFirstLighting; e < BbSettings::EffectCount; ++e) {
+        const auto& effect = BbSettings::Effects[e];
+        if (const char* label = Item(effect.label, effect.label_ru)) {
+            Checkbox(label, s.effects[e]);
+            if (!BbSettings::EffectIsLive(e)) {
+                Hint(BbSettings::MenuText("Applied when the game restarts.", "Применяется после перезапуска игры."));
+                if (s.effects[e] != s.startup_effects[e]) {
+                    ImGui::SameLine();
+                    ImGui::TextDisabled("%s", BbSettings::MenuText("Applied when the game restarts.",
+                                                                   "Применяется после перезапуска игры."));
+                }
+            }
+            if (e == BbSettings::EffectModernSsr && s.effects[e] &&
+                !s.effects[BbSettings::EffectSsr]) {
+                ImGui::TextDisabled("%s", BbSettings::MenuText("Needs Screen-space reflections on",
+                                                               "Нужны включённые экранные отражения"));
+            }
+        }
+    }
+    if (const char* heading = Item("Looks", "Образы")) {
+        ImGui::TextUnformatted(heading);
+        for (int look = 0; look < BbLooks::PresetCount; ++look) {
+            if (look != 0) {
+                ImGui::SameLine();
+            }
+            if (ImGui::Button(BbSettings::MenuText(BbLooks::PresetName(look), BbLooks::PresetNameRu(look)))) {
+                BbLooks::Apply(look);
+            }
+        }
+        if (BbLooks::HasPrevious()) {
+            if (ImGui::Button(BbSettings::MenuText("Back to my settings", "Вернуть мои настройки"))) {
+                BbLooks::GoBack();
+            }
+        }
+        if (BbLooks::NeedsRestart()) {
+            ImGui::TextDisabled("%s", BbSettings::MenuText("Part of this look applies when the game restarts.",
+                                                           "Часть образа применится после перезапуска игры."));
+        }
+    }
     if (moved && !s.graphics_controls) {
         Store(s.graphics_controls, true, true);
     }
@@ -624,6 +668,10 @@ void PictureSection() {
             Store(s.graphics_vignette, true, true);
             Store(s.graphics_ao_strength, 1.0f, true);
             Store(s.graphics_shadow_scale, 1.0f, true);
+            Store(s.graphics_gi_strength, 6.0f, true);
+            Store(s.graphics_ssr_intensity, 1.0f, true);
+            Store(s.graphics_volumetric_intensity, 1.0f, true);
+            Store(s.graphics_point_fog_intensity, 1.0f, true);
         }
     }
     ImGui::EndDisabled();
@@ -651,7 +699,7 @@ void EffectsSection() {
             ImGui::EndCombo();
         }
     }
-    for (int e = 0; e < BbSettings::EffectCount; ++e) {
+    for (int e = 0; e < BbSettings::EffectFirstLighting; ++e) {
         const auto& effect = BbSettings::Effects[e];
         const char* label = Item(effect.label, effect.label_ru);
         if (!label) {
@@ -700,8 +748,11 @@ void UpscalerSection() {
                 ImGui::EndDisabled();
                 if (!supported) {
                     ImGui::SameLine();
-                    ImGui::TextDisabled("%s", BbSettings::MenuText("— not supported by this GPU",
-                                                                   "— не поддерживается видеокартой"));
+                    const bool use_sdk = i == BbSettings::UpscalerFsr4 && s.fsr_sdk_supported.load();
+                    ImGui::TextDisabled("%s", use_sdk ? BbSettings::MenuText("— too slow on this GPU: use FSR (AMD FSR SDK)",
+                                                                             "— слишком медленно на этой видеокарте: выберите FSR (AMD FSR SDK)")
+                                                      : BbSettings::MenuText("— not supported by this GPU",
+                                                                             "— не поддерживается видеокартой"));
                 }
             }
             for (const char* name : later) {
@@ -897,6 +948,21 @@ void UpscalerSection() {
                 "Generation загружена."));
         }
     }
+    if (s.anti_lag_supported || Searching()) {
+        if (const char* label = Item("AMD Anti-Lag 2")) {
+            bool anti_lag = s.anti_lag.load();
+            if (ImGui::Checkbox(label, &anti_lag)) {
+                Store(s.anti_lag, anti_lag, true);
+            }
+            Hint(BbSettings::MenuText(
+                "Lower input lag: the Radeon driver starts each frame as late as it can. Only on "
+                "AMD drivers that offer it. It turns itself off until the next start if the driver "
+                "holds the game too long.",
+                "Меньше задержка ввода: драйвер Radeon начинает каждый кадр как можно позже. Только "
+                "с драйверами AMD, которые это поддерживают. Выключается до следующего запуска, если "
+                "драйвер слишком долго держит игру."));
+        }
+    }
     const bool upscaler_on = s.upscaler != BbSettings::UpscalerOff;
     const bool taa = s.upscaler == BbSettings::UpscalerTaa;
     ImGui::BeginDisabled(!upscaler_on);
@@ -1068,6 +1134,22 @@ void DlssSection() {
             "DLSS сам определяет экспозицию кадра, и для готового кадра игры (HDR-сцена при 1080p — "
             "всегда). Может успокоить тёмные сцены с гостингом. Меняется сразу (короткая пауза)."));
     }
+    if (const char* label = Item("Upscale before post-processing (experimental)", "Апскейл до постобработки (эксперимент)")) {
+        Checkbox(label, s.upscale_before_post);
+        Hint(BbSettings::MenuText(
+            "Outputs other than 1080p: the upscaler takes the HDR scene before the game's post-processing, as NVIDIA's "
+            "DLSS guide asks, and the post runs at the output size. Uses more GPU time and memory. Applies after a restart.",
+            "Вывод не 1080p: апскейлер берёт HDR-сцену до постобработки игры, как просит руководство NVIDIA по DLSS, а "
+            "постобработка идёт в разрешении вывода. Больше нагрузка на GPU и память. Применяется после перезапуска."));
+    }
+    if (const char* label = Item("DLSS: less wobble while turning (experimental)", "DLSS: меньше дрожания при поворотах (эксперимент)")) {
+        Checkbox(label, s.dlss_jitter_fade);
+        Hint(BbSettings::MenuText(
+            "Fades the sub-pixel jitter out while the camera moves. The image holds steadier, but NVIDIA's "
+            "DLSS guide warns against jitter only on a still camera. Off: as the guide asks. Live.",
+            "Убирает субпиксельный jitter, пока камера движется. Картинка стабильнее, но руководство NVIDIA "
+            "по DLSS предостерегает от jitter только при неподвижной камере. Выкл.: как в руководстве. Меняется сразу."));
+    }
     if (const char* label = Item("DLSS: sharper textures (mip bias -1)", "DLSS: чётче текстуры (mip bias -1)")) {
         Checkbox(label, s.dlss_mip_bias);
         Hint(BbSettings::MenuText(
@@ -1162,8 +1244,8 @@ void MaskSection() {
                               ? BbSettings::MenuText("FSR 3.1 uses it as its reactive mask.",
                                                      "FSR 3.1 берёт её как свою реактивную маску.")
                           : s.upscaler == BbSettings::UpscalerDlss
-                              ? BbSettings::MenuText("DLSS uses it to trust the current frame more (its bias mask).",
-                                                     "DLSS по ней больше доверяет текущему кадру (маска смещения).")
+                              ? BbSettings::MenuText("Current DLSS models do not use it, only the deprecated preset F.",
+                                                     "Текущие модели DLSS её не используют, только устаревший пресет F.")
                           : BbSettings::IsFsr4(s.upscaler)
                               ? BbSettings::MenuText("FSR 4 has no mask input: the marked pixels are blended with "
                                                      "this frame after it.",
@@ -1619,6 +1701,93 @@ void VoiceSection() {
     }
 }
 
+std::string ConnectionText(const BbRoom::PeerStatus& peer) {
+    char text[64];
+    switch (peer.state) {
+    case BbRoom::LinkState::Good:
+        std::snprintf(text, sizeof text, "%d %s, %s", peer.ping_ms, BbSettings::MenuText("ms", "мс"), BbSettings::MenuText("good", "хорошо"));
+        return text;
+    case BbRoom::LinkState::Slow:
+        std::snprintf(text, sizeof text, "%d %s, %s", peer.ping_ms, BbSettings::MenuText("ms", "мс"), BbSettings::MenuText("slow", "медленно"));
+        return text;
+    case BbRoom::LinkState::Reconnecting:
+        return BbSettings::MenuText("reconnecting", "переподключается");
+    case BbRoom::LinkState::Unknown:
+        break;
+    }
+    return BbSettings::MenuText("no ping", "нет пинга");
+}
+
+ImU32 ConnectionColor(BbRoom::LinkState state) {
+    switch (state) {
+    case BbRoom::LinkState::Good: return IM_COL32(150, 196, 130, 255);
+    case BbRoom::LinkState::Slow: return IM_COL32(226, 186, 96, 255);
+    case BbRoom::LinkState::Reconnecting: return IM_COL32(220, 120, 100, 255);
+    case BbRoom::LinkState::Unknown: break;
+    }
+    return IM_COL32(150, 142, 126, 230);
+}
+
+const BbRoom::PeerStatus* FindPeer(const std::vector<BbRoom::PeerStatus>& peers, int slot) {
+    for (const BbRoom::PeerStatus& peer : peers)
+        if (peer.slot == slot) return &peer;
+    return nullptr;
+}
+
+std::string VisitorName(int slot, const std::string& name) {
+    return BbRoom::IsVisitorSlot(slot) ? name + BbSettings::MenuText(" [Visitor]", " [Посетитель]") : name;
+}
+
+void ConnectionList(const std::vector<std::pair<int, std::string>>& listed) {
+    if (!BbSettings::Get().coop_status) return;
+    for (const BbRoom::PeerStatus& peer : BbRoom::Connections()) {
+        if (std::any_of(listed.begin(), listed.end(), [&](const auto& m) { return m.first == peer.slot; })) continue;
+        if (BbRoom::IsHost() && BbRoom::IsVisitorSlot(peer.slot)) continue;
+        ImGui::TextUnformatted(VisitorName(peer.slot, peer.name).c_str());
+        ImGui::SameLine();
+        ImGui::TextColored(ImGui::ColorConvertU32ToFloat4(ConnectionColor(peer.state)), "%s", ConnectionText(peer).c_str());
+    }
+}
+
+void CoopOptionsSection() {
+    auto& s = BbSettings::Get();
+    Section("Co-op notices", "Уведомления совместной игры");
+    if (const char* label = Item("Connection status", "Состояние соединения")) {
+        Checkbox(label, s.coop_status);
+        Hint(BbSettings::MenuText("Shows each hunter's ping in the party lists, and a notice while someone is reconnecting.",
+                                  "Показывает пинг охотников в списках отряда и уведомление, пока кто-то переподключается."));
+    }
+    if (const char* label = Item("Ping on the party HUD", "Пинг на панели отряда")) {
+        Checkbox(label, s.coop_hud_ping);
+        Hint(BbSettings::MenuText("Shows each hunter's ping beside the distance on their party HUD row.",
+                                  "Показывает пинг охотника рядом с расстоянием в его строке на панели отряда."));
+    }
+    if (const char* label = Item("Join and leave notices", "Уведомления о входе и выходе")) {
+        Checkbox(label, s.coop_notices);
+        Hint(BbSettings::MenuText("A short line when a hunter joins, leaves, is kicked, reconnects or dies.",
+                                  "Короткая строка, когда охотник входит, выходит, выгнан, переподключился или погиб."));
+    }
+    if (const char* label = Item("Requests to come to the host", "Просьбы перенести к хозяину")) {
+        Checkbox(label, s.coop_warp_requests);
+        BbRoom::SetWarpRequests(s.coop_warp_requests);
+        Hint(BbSettings::MenuText("A guest asks from the F2 list and the host accepts with Bring. Off: guests cannot ask you, and you cannot ask.",
+                                  "Гость просит в списке F2, хозяин принимает кнопкой «Призвать». Выкл.: вас не смогут попросить, и вы не сможете."));
+    }
+    if (BbRoom::IsHost() && BbRoom::OpenRoomAllowed()) {
+        if (const char* label = Item("Open my room to visitors", "Открыть мою комнату для посетителей")) {
+            Checkbox(label, s.coop_open_room);
+            BbRoom::SetOpenRoom(s.coop_open_room);
+            Hint(BbSettings::MenuText("While on, your game gives your room's invite code to Lantern's co-op server, and the Lantern event team can see it in Discord and join for surprise events, so your room is not private from them. Everyone in the room sees a line when a visitor joins, and you can Kick them. Nobody is moved: guests keep control of their own summons. Off or leaving takes the room off the list at once; New room in the launcher retires a code they already saw.",
+                                      "Пока включено, ваша игра передаёт код приглашения вашей комнаты серверу Lantern, а команда мероприятий Lantern видит его в Discord и может зайти на неожиданное событие, поэтому от них комната не закрыта. Все в комнате видят строку, когда входит посетитель, и вы можете его выгнать. Никого не переносит: гости сами управляют своими призывами. Выключение или выход сразу убирает комнату из списка; «Новая комната» в лаунчере отменяет уже увиденный код."));
+            if (s.coop_open_room) {
+                ImGui::SameLine();
+                ImGui::TextDisabled("%s", BbRoom::OpenRoomListed() ? BbSettings::MenuText("listed", "в списке")
+                                                                   : BbSettings::MenuText("not listed yet", "пока не в списке"));
+            }
+        }
+    }
+}
+
 void CoopSection() {
     namespace Online = BbEngine::OnlineFixes;
     Section("Seamless co-op", "Бесшовная совместная игра");
@@ -1641,13 +1810,32 @@ void CoopSection() {
         }
         Hint(BbSettings::MenuText("Summons your friends' signs until the party is full. No bell needed; friends press Send sign.",
                                   "Призывает знаки друзей, пока отряд не заполнится. Колокол не нужен; друзья нажимают «Отправить знак»."));
+        int lamp_slot = 0;
+        std::string lamp_who;
+        std::uint32_t lamp_id = 0;
+        if (BbRoom::PendingLampAsk(lamp_slot, lamp_who, lamp_id)) {
+            ImGui::TextWrapped("%s%s (%s)", lamp_who.c_str(), BbSettings::MenuText(" asks the party to travel", " просит отряд отправиться"), Online::LampPlace(lamp_id).c_str());
+            if (ImGui::Button(BbSettings::MenuText("Accept: the whole party travels", "Принять: весь отряд отправится"))) Online::AnswerLampAsk(true);
+            ImGui::SameLine();
+            if (ImGui::Button(BbSettings::MenuText("Stay here", "Остаться здесь"))) Online::AnswerLampAsk(false);
+        }
         const auto members = BbRoom::PartyMembers();
+        const auto peers = BbRoom::Connections();
         if (members.empty()) {
             ImGui::TextDisabled("%s", BbSettings::MenuText("Nobody in your world yet.", "В вашем мире пока никого."));
         } else {
             for (const auto& [slot, name] : members) {
                 ImGui::PushID(slot);
-                ImGui::TextUnformatted(name.c_str());
+                ImGui::TextUnformatted(VisitorName(slot, name).c_str());
+                const BbRoom::PeerStatus* peer = FindPeer(peers, slot);
+                if (peer && BbSettings::Get().coop_status) {
+                    ImGui::SameLine();
+                    ImGui::TextColored(ImGui::ColorConvertU32ToFloat4(ConnectionColor(peer->state)), "%s", ConnectionText(*peer).c_str());
+                }
+                if (peer && peer->asked) {
+                    ImGui::SameLine();
+                    ImGui::TextUnformatted(BbSettings::MenuText("asks to come", "просит перенести"));
+                }
                 ImGui::SameLine();
                 if (ImGui::SmallButton(BbSettings::MenuText("Bring", "Призвать к себе"))) BbRoom::SendBring(slot);
                 ImGui::SameLine();
@@ -1664,13 +1852,29 @@ void CoopSection() {
             Hint(BbSettings::MenuText("Sends everyone back to their own world. Your room stays open.",
                                       "Отправляет всех в их миры. Комната остаётся открытой."));
         }
+        for (const BbRoom::PeerStatus& peer : peers) {
+            if (!BbRoom::IsVisitorSlot(peer.slot) || std::any_of(members.begin(), members.end(), [&](const auto& m) { return m.first == peer.slot; })) continue;
+            ImGui::PushID(peer.slot);
+            ImGui::TextUnformatted(VisitorName(peer.slot, peer.name).c_str());
+            ImGui::SameLine();
+            if (ImGui::SmallButton(BbSettings::MenuText("Kick", "Выгнать"))) BbRoom::Kick(peer.slot);
+            ImGui::PopID();
+        }
+        ConnectionList(members);
         return;
     }
+    ConnectionList({});
     if (role == 6) {
         ImGui::TextUnformatted(BbSettings::MenuText("You are in the host's world.", "Вы в мире хозяина."));
-        if (ImGui::Button(BbSettings::MenuText("Go to the host", "К хозяину"))) Online::GoToHost();
-        ImGui::SameLine();
-        if (ImGui::Button(BbSettings::MenuText("Return to your own world", "Вернуться в свой мир"))) BbRoom::LeaveParty();
+        if (BbSettings::Get().coop_warp_requests) {
+            const bool waiting = BbRoom::WarpWaiting();
+            if (ImGui::Button(waiting ? BbSettings::MenuText("Waiting for the host...", "Ждём хозяина...")
+                                      : BbSettings::MenuText("Ask the host to bring you", "Попросить хозяина перенести вас")) &&
+                !waiting)
+                BbRoom::SendWarpAsk();
+            ImGui::SameLine();
+        }
+        if (ImGui::Button(BbSettings::MenuText("Return to your own world", "Вернуться в свой мир"))) Online::LeaveHost();
         return;
     }
     if (ImGui::Button(summoning ? BbSettings::MenuText("Take back the sign", "Убрать знак")
@@ -1720,6 +1924,7 @@ void DrawTab(int tab) {
         break;
     case TabCoop:
         CoopSection();
+        CoopOptionsSection();
         VoiceSection();
         break;
     default:
@@ -1845,9 +2050,12 @@ void Menu() {
     bool restart =
         s.object_motion != s.startup_object_motion || s.model_lod != s.startup_model_lod ||
         s.live_resolution != s.startup_live_resolution || s.hdr != s.startup_hdr ||
+        s.graphics_motion_blur_quality != s.startup_motion_blur_quality ||
+        s.graphics_shadow_resolution != s.startup_shadow_resolution ||
+        s.graphics_local_shadow_resolution != s.startup_local_shadow_resolution ||
         BbSettings::ResolutionNeedsRestart();
     for (int e = 0; e < BbSettings::EffectCount; ++e) {
-        restart |= s.effects[e] != s.startup_effects[e];
+        restart |= !BbSettings::EffectIsLive(e) && s.effects[e] != s.startup_effects[e];
     }
     restart |= Vulkan::OptiScaler::Detect().loaded &&
                (s.optiscaler_compat != s.startup_optiscaler.compat ||
@@ -2009,6 +2217,100 @@ void SummonNote() {
     draw->AddText(font, px, ImVec2(cx - size.x * 0.5f, y + 12.0f * k), IM_COL32(226, 216, 192, 255), text.c_str());
 }
 
+std::vector<BbRoom::PartyLine> ShownPartyLines() {
+    const auto& s = BbSettings::Get();
+    std::vector<BbRoom::PartyLine> shown;
+    for (BbRoom::PartyLine& line : BbRoom::PartyLines()) {
+        const bool warp = line.kind == BbRoom::PartyLineKind::WarpAsked || line.kind == BbRoom::PartyLineKind::WarpSeen ||
+                          line.kind == BbRoom::PartyLineKind::WarpOff || line.kind == BbRoom::PartyLineKind::WarpNoAnswer ||
+                          line.kind == BbRoom::PartyLineKind::BringFar;
+        if (line.kind == BbRoom::PartyLineKind::Visitor || (warp ? s.coop_warp_requests.load() : s.coop_notices.load())) shown.push_back(std::move(line));
+    }
+    return shown;
+}
+
+std::string PartyLineText(const BbRoom::PartyLine& line) {
+    const std::string who = line.name.empty() ? std::string(BbSettings::MenuText("A hunter", "Охотник")) : line.name;
+    switch (line.kind) {
+    case BbRoom::PartyLineKind::EnteredRoom: return who + BbSettings::MenuText(" entered the room", " вошёл в комнату");
+    case BbRoom::PartyLineKind::JoinedWorld: return who + BbSettings::MenuText(" joined the world", " присоединился к миру");
+    case BbRoom::PartyLineKind::Left: return who + BbSettings::MenuText(" left", " вышел");
+    case BbRoom::PartyLineKind::Kicked: return who + BbSettings::MenuText(" was kicked", " выгнан");
+    case BbRoom::PartyLineKind::Reconnected: return who + BbSettings::MenuText(" reconnected", " переподключился");
+    case BbRoom::PartyLineKind::Died: return who + BbSettings::MenuText(" died", " погиб");
+    case BbRoom::PartyLineKind::BackOnline: return BbSettings::MenuText("Connection is back", "Соединение восстановлено");
+    case BbRoom::PartyLineKind::WarpAsked: return who + BbSettings::MenuText(" asks to come to you, press F2 then Bring", " просит перенести к вам, нажмите F2, затем Призвать");
+    case BbRoom::PartyLineKind::WarpSeen: return BbSettings::MenuText("The host has your request", "Хозяин получил вашу просьбу");
+    case BbRoom::PartyLineKind::WarpOff: return BbSettings::MenuText("The host is not taking requests", "Хозяин не принимает просьбы");
+    case BbRoom::PartyLineKind::WarpNoAnswer: return BbSettings::MenuText("The host did not answer, maybe an older version", "Хозяин не ответил, возможно старая версия");
+    case BbRoom::PartyLineKind::LampAsked: return who + BbSettings::MenuText(" asks the party to travel, press F2 to answer", " просит отряд отправиться, нажмите F2, чтобы ответить");
+    case BbRoom::PartyLineKind::LampSeen: return BbSettings::MenuText("The host has your request to travel", "Хозяин получил вашу просьбу отправиться");
+    case BbRoom::PartyLineKind::LampAgreed: return BbSettings::MenuText("The host accepted: the party travels", "Хозяин согласился: отряд отправляется");
+    case BbRoom::PartyLineKind::LampRefused: return BbSettings::MenuText("The host stays here, you stay with the party", "Хозяин остаётся здесь, вы остаётесь с отрядом");
+    case BbRoom::PartyLineKind::LampNoAnswer: return BbSettings::MenuText("The host did not answer, you stay with the party", "Хозяин не ответил, вы остаётесь с отрядом");
+    case BbRoom::PartyLineKind::HostTravels: return BbSettings::MenuText("The host is travelling, you follow", "Хозяин отправляется в путь, вы следуете за ним");
+    case BbRoom::PartyLineKind::TravelLost: return BbSettings::MenuText("The party split on the way, the bells bring it back together", "Группа разделилась в пути, колокола соберут её снова");
+    case BbRoom::PartyLineKind::StayedWithParty: return BbSettings::MenuText("You were taken, but the party holds on to you: you are back with the host", "Вас схватили, но отряд вас не отпустил: вы снова рядом с хозяином");
+    case BbRoom::PartyLineKind::BringFar: return BbSettings::MenuText("The host is in another area, use the host's lamp", "Хозяин в другой области, идите через его фонарь");
+    case BbRoom::PartyLineKind::Visitor: return BbSettings::MenuText("A visitor from the event team entered the room", "В комнату вошёл посетитель из команды мероприятий");
+    }
+    return {};
+}
+
+void PartyLines() {
+    const auto lines = ShownPartyLines();
+    if (lines.empty()) return;
+    const ImGuiViewport* viewport = ImGui::GetMainViewport();
+    const float k = base_scale;
+    ImDrawList* draw = ImGui::GetForegroundDrawList();
+    ImFont* font = name_font ? name_font : ImGui::GetFont();
+    const float px = ImGui::GetFontSize() * 1.15f;
+    const float right = viewport->WorkPos.x + viewport->WorkSize.x - 40.0f * k;
+    float y = viewport->WorkPos.y + 240.0f * k;
+    for (const BbRoom::PartyLine& line : lines) {
+        const std::string text = PartyLineText(line);
+        const ImVec2 size = font->CalcTextSizeA(px, FLT_MAX, 0.0f, text.c_str());
+        const int shade = int(170.0f * line.alpha);
+        const ImVec2 a(right - size.x - 60.0f * k, y), b(right + 12.0f * k, y + size.y + 10.0f * k);
+        draw->AddRectFilledMultiColor(a, b, IM_COL32(0, 0, 0, 0), IM_COL32(0, 0, 0, shade), IM_COL32(0, 0, 0, shade), IM_COL32(0, 0, 0, 0));
+        draw->AddText(font, px, ImVec2(right - size.x, y + 5.0f * k), IM_COL32(226, 216, 192, int(255.0f * line.alpha)), text.c_str());
+        y += size.y + 16.0f * k;
+    }
+}
+
+bool ReconnectNoteActive() {
+    BbRoom::ReconnectNotice notice;
+    return BbSettings::Get().coop_status && BbRoom::CurrentReconnect(notice);
+}
+
+void ReconnectNote() {
+    BbRoom::ReconnectNotice notice;
+    if (!BbSettings::Get().coop_status || !BbRoom::CurrentReconnect(notice)) return;
+    std::string text;
+    if (notice.gave_up) {
+        text = BbSettings::MenuText("Could not reach the room, seamless co-op is off until the next start",
+                                    "Комната недоступна, совместная игра выключена до следующего запуска");
+    } else if (notice.own) {
+        text = std::string(BbSettings::MenuText("Connection lost, reconnecting... ", "Соединение потеряно, переподключение... ")) + std::to_string(notice.seconds) +
+               BbSettings::MenuText(" s", " с");
+    } else {
+        for (const std::string& name : notice.names) text += (text.empty() ? "" : ", ") + name;
+        text += BbSettings::MenuText(" reconnecting...", " переподключается...");
+    }
+    const ImGuiViewport* viewport = ImGui::GetMainViewport();
+    const float k = base_scale;
+    ImDrawList* draw = ImGui::GetForegroundDrawList();
+    ImFont* font = name_font ? name_font : ImGui::GetFont();
+    const float px = ImGui::GetFontSize() * 1.1f;
+    const ImVec2 size = font->CalcTextSizeA(px, FLT_MAX, 0.0f, text.c_str());
+    const float cx = viewport->WorkPos.x + viewport->WorkSize.x * 0.5f;
+    const float y = viewport->WorkPos.y + 64.0f * k;
+    const float half = size.x * 0.5f + 60.0f * k;
+    draw->AddRectFilledMultiColor(ImVec2(cx - half, y), ImVec2(cx, y + size.y + 12.0f * k), IM_COL32(0, 0, 0, 0), IM_COL32(0, 0, 0, 190), IM_COL32(0, 0, 0, 190), IM_COL32(0, 0, 0, 0));
+    draw->AddRectFilledMultiColor(ImVec2(cx, y), ImVec2(cx + half, y + size.y + 12.0f * k), IM_COL32(0, 0, 0, 190), IM_COL32(0, 0, 0, 0), IM_COL32(0, 0, 0, 0), IM_COL32(0, 0, 0, 190));
+    draw->AddText(font, px, ImVec2(cx - size.x * 0.5f, y + 6.0f * k), IM_COL32(226, 186, 96, 255), text.c_str());
+}
+
 bool AnnouncementActive() {
     std::string text;
     float alpha = 0.0f;
@@ -2150,7 +2452,7 @@ constexpr float kOrnamentArm = 64.0f / 153.0f, kOrnamentScroll = 43.0f / 153.0f;
 ImTextureData* GaugeTexture() {
     static ImTextureData* texture = nullptr;
     if (texture) return texture;
-    BbHudGauge::Start();
+    BbHudGauge::Start(base_scale >= 1.4f);
     const BbHudGauge::Art* art = BbHudGauge::Ready();
     if (!art) return nullptr;
     texture = IM_NEW(ImTextureData)();
@@ -2315,6 +2617,32 @@ void SpectatorBanner() {
     }
 }
 
+void VoiceBadge(ImDrawList* draw, ImVec2 corner, bool muted, float k) {
+    const float radius = 10.0f * k;
+    const ImVec2 c(corner.x - radius * 0.35f, corner.y - radius * 0.35f);
+    draw->AddCircleFilled(c, radius, IM_COL32(8, 7, 8, 235), 24);
+    draw->AddCircle(c, radius, IM_COL32(196, 176, 130, 230), 24, 1.0f * k);
+    if (muted) {
+        const ImU32 red = IM_COL32(222, 74, 58, 255);
+        const float mic = 2.4f * k;
+        draw->AddRectFilled(ImVec2(c.x - mic, c.y - 6.0f * k), ImVec2(c.x + mic, c.y + 1.5f * k), red, mic);
+        draw->PathArcTo(ImVec2(c.x, c.y), 4.4f * k, 0.0f, 3.14159f, 12);
+        draw->PathStroke(red, 0, 1.2f * k);
+        draw->AddLine(ImVec2(c.x, c.y + 4.4f * k), ImVec2(c.x, c.y + 6.6f * k), red, 1.2f * k);
+        draw->AddLine(ImVec2(c.x - 6.0f * k, c.y - 6.0f * k), ImVec2(c.x + 6.0f * k, c.y + 6.0f * k), red, 1.6f * k);
+        return;
+    }
+    const float now = float(ImGui::GetTime());
+    static constexpr float kSpeed[4] = {7.1f, 9.3f, 6.2f, 8.4f}, kPhase[4] = {0.0f, 1.4f, 2.6f, 0.8f};
+    const float wide = 2.0f * k, gap = 1.2f * k;
+    const float start = c.x - (wide * 4.0f + gap * 3.0f) * 0.5f;
+    for (int i = 0; i < 4; ++i) {
+        const float high = (2.5f + 4.0f * (0.5f + 0.5f * std::sin(now * kSpeed[i] + kPhase[i]))) * k;
+        const float x = start + float(i) * (wide + gap);
+        draw->AddRectFilled(ImVec2(x, c.y - high), ImVec2(x + wide, c.y + high), IM_COL32(226, 186, 96, 255));
+    }
+}
+
 void PartyHud(const std::vector<BbEngine::OnlineFixes::PartyRow>& rows) {
     ImTextureData* gauge = GaugeTexture();
     const BbHudGauge::Art* art = gauge ? BbHudGauge::Ready() : nullptr;
@@ -2339,6 +2667,8 @@ void PartyHud(const std::vector<BbEngine::OnlineFixes::PartyRow>& rows) {
         Ornament(draw, gauge, art->header, ImVec2(left, top - header_h - 4.0f * k), ImVec2(left + header_w, top - 4.0f * k),
                  false, IM_COL32(255, 255, 255, 220));
     }
+    const auto talkers = BbVoice::Talkers();
+    const auto peers = BbRoom::Connections();
     for (std::size_t i = 0; i < rows.size(); ++i) {
         const auto& row = rows[i];
         const ImU32 accent = row.down ? fallen : accents[i % std::size(accents)];
@@ -2392,14 +2722,14 @@ void PartyHud(const std::vector<BbEngine::OnlineFixes::PartyRow>& rows) {
         }
         const float text_x = box_end.x + 12.0f * k;
         const float bar_w = card_w - (text_x - left) - 24.0f * k;
-        draw->AddText(font, name_size, ImVec2(text_x + k, top + 7.0f * k), IM_COL32(0, 0, 0, int(200 * dim)), row.name.c_str());
+        const std::string shown_name = row.dev ? row.name + " [Dev]" : row.name;
+        draw->AddText(font, name_size, ImVec2(text_x + k, top + 7.0f * k), IM_COL32(0, 0, 0, int(200 * dim)), shown_name.c_str());
         draw->AddText(font, name_size, ImVec2(text_x, top + 6.0f * k),
-                      (parchment & ~IM_COL32_A_MASK) | (ImU32(255 * dim) << IM_COL32_A_SHIFT), row.name.c_str());
-        if (BbVoice::TalkingName(row.name)) {
-            const float name_w = font->CalcTextSizeA(name_size, FLT_MAX, 0.0f, row.name.c_str()).x;
-            const ImVec2 c(text_x + name_w + 10.0f * k, top + 6.0f * k + name_size * 0.55f);
-            draw->AddCircleFilled(c, 3.0f * k, IM_COL32(226, 216, 192, 255));
-            draw->AddCircle(c, 6.0f * k, IM_COL32(226, 216, 192, 160), 0, 1.2f * k);
+                      (parchment & ~IM_COL32_A_MASK) | (ImU32(255 * dim) << IM_COL32_A_SHIFT), shown_name.c_str());
+        for (const BbVoice::Talker& talker : talkers) {
+            if (talker.name != row.name || (!talker.muted && !talker.talking)) continue;
+            VoiceBadge(draw, box_end, talker.muted, k);
+            break;
         }
         char where[32] = "";
         if (row.down) {
@@ -2408,6 +2738,22 @@ void PartyHud(const std::vector<BbEngine::OnlineFixes::PartyRow>& rows) {
             std::snprintf(where, sizeof where, "%.0f m", row.distance);
         }
         const float arrow_room = row.distance >= 0.0f && !row.down ? 16.0f * k : 0.0f;
+        const float where_w = where[0] ? font->CalcTextSizeA(where_size, FLT_MAX, 0.0f, where).x : 0.0f;
+        if (BbSettings::Get().coop_hud_ping) {
+            for (const BbRoom::PeerStatus& peer : peers) {
+                if (peer.name != row.name || peer.state == BbRoom::LinkState::Unknown) continue;
+                char ping[32] = "...";
+                if (peer.state != BbRoom::LinkState::Reconnecting) std::snprintf(ping, sizeof ping, "%d %s", peer.ping_ms, BbSettings::MenuText("ms", "мс"));
+                const float ping_px = where_size * 0.8f;
+                const ImVec2 size = font->CalcTextSizeA(ping_px, FLT_MAX, 0.0f, ping);
+                const float name_end = text_x + font->CalcTextSizeA(name_size, FLT_MAX, 0.0f, shown_name.c_str()).x + 6.0f * k;
+                const ImVec2 at(text_x + bar_w - arrow_room - where_w - (where[0] ? 10.0f * k : 0.0f) - size.x, top + 7.0f * k + (where_size - ping_px));
+                if (at.x < name_end) break;
+                draw->AddText(font, ping_px, ImVec2(at.x + k, at.y + k), IM_COL32(0, 0, 0, 200), ping);
+                draw->AddText(font, ping_px, at, ConnectionColor(peer.state), ping);
+                break;
+            }
+        }
         if (where[0]) {
             const ImVec2 size = font->CalcTextSizeA(where_size, FLT_MAX, 0.0f, where);
             const ImVec2 at(text_x + bar_w - arrow_room - size.x, top + 7.0f * k);
@@ -2482,6 +2828,8 @@ static OverlayKeys MenuKeys() {
 }
 
 void Init(const Vulkan::Instance& instance, vk::Format format, u32 image_count) {
+    BbRoom::SetWarpRequests(BbSettings::Get().coop_warp_requests);
+    BbRoom::SetOpenRoom(BbSettings::Get().coop_open_room);
     std::scoped_lock lock{imgui_mutex};
     if (initialized) {
         return;
@@ -2720,7 +3068,7 @@ bool HandleEvent(const SDL_Event& event) {
 }
 
 bool Visible() {
-    return initialized && (menu_open || prompt_active || BbSettings::Get().show_fps || CompileNoteActive() || RelayNoteActive() || SummonNoteActive() || AnnouncementActive() || coop_open ||
+    return initialized && (menu_open || prompt_active || BbSettings::Get().show_fps || CompileNoteActive() || RelayNoteActive() || SummonNoteActive() || AnnouncementActive() || ReconnectNoteActive() || !ShownPartyLines().empty() || coop_open ||
                            !BbEngine::OnlineFixes::PartyRows().empty() || BbEngine::OnlineFixes::Spectating() || BbFaceShot::JustTaken());
 }
 
@@ -2732,7 +3080,7 @@ bool CapturesInput() {
     return menu_open || prompt_active || coop_open;
 }
 
-enum class CoopKind { Summon, Member, BringAll, End, Join, GoTo, Leave, Voice, Mic, Speak, TalkKey, Volume, Listen, Close };
+enum class CoopKind { LampYes, LampNo, Summon, Member, Player, Visitor, BringAll, End, Join, GoTo, Leave, Voice, Mic, Speak, TalkKey, Volume, Listen, Close };
 
 struct CoopItem {
     CoopKind kind;
@@ -2745,18 +3093,36 @@ std::vector<CoopItem> CoopItems() {
     std::vector<CoopItem> items;
     if (BbRoom::Active()) {
         if (BbRoom::IsHost()) {
+            int asker = 0;
+            std::string who;
+            std::uint32_t lamp = 0;
+            if (BbRoom::PendingLampAsk(asker, who, lamp)) {
+                items.push_back({CoopKind::LampYes, asker, who});
+                items.push_back({CoopKind::LampNo, asker, who});
+            }
             items.push_back({CoopKind::Summon});
             const auto members = BbRoom::PartyMembers();
-            for (const auto& [slot, name] : members) items.push_back({CoopKind::Member, slot, name});
+            for (const auto& [slot, name] : members) items.push_back({CoopKind::Member, slot, VisitorName(slot, name)});
+            for (const BbRoom::PeerStatus& peer : BbRoom::Connections()) {
+                const bool member = std::any_of(members.begin(), members.end(), [&](const auto& m) { return m.first == peer.slot; });
+                if (member) continue;
+                if (BbRoom::IsVisitorSlot(peer.slot)) items.push_back({CoopKind::Visitor, peer.slot, VisitorName(peer.slot, peer.name)});
+                else if (BbSettings::Get().coop_status) items.push_back({CoopKind::Player, peer.slot, peer.name});
+            }
             if (!members.empty()) {
                 items.push_back({CoopKind::BringAll});
                 items.push_back({CoopKind::End});
             }
-        } else if (Online::PartyRole() == 6) {
-            items.push_back({CoopKind::GoTo});
-            items.push_back({CoopKind::Leave});
         } else {
-            items.push_back({CoopKind::Join});
+            if (BbSettings::Get().coop_status) {
+                for (const BbRoom::PeerStatus& peer : BbRoom::Connections()) items.push_back({CoopKind::Player, peer.slot, VisitorName(peer.slot, peer.name)});
+            }
+            if (Online::PartyRole() == 6) {
+                if (BbSettings::Get().coop_warp_requests) items.push_back({CoopKind::GoTo});
+                items.push_back({CoopKind::Leave});
+            } else {
+                items.push_back({CoopKind::Join});
+            }
         }
     }
     if (BbRoom::Active()) {
@@ -2787,6 +3153,12 @@ bool CoopArmed(const std::string& what) {
 void CoopActivate(const CoopItem& item) {
     namespace Online = BbEngine::OnlineFixes;
     switch (item.kind) {
+    case CoopKind::LampYes:
+        if (CoopArmed("lamp")) Online::AnswerLampAsk(true);
+        break;
+    case CoopKind::LampNo:
+        Online::AnswerLampAsk(false);
+        break;
     case CoopKind::Summon:
     case CoopKind::Join:
         if (Online::Summoning()) Online::StopSummon();
@@ -2795,6 +3167,9 @@ void CoopActivate(const CoopItem& item) {
     case CoopKind::Member:
         if (coop_column == 0) BbRoom::SendBring(item.slot);
         else if (CoopArmed("kick:" + std::to_string(item.slot))) BbRoom::Kick(item.slot);
+        break;
+    case CoopKind::Visitor:
+        if (CoopArmed("kick:" + std::to_string(item.slot))) BbRoom::Kick(item.slot);
         break;
     case CoopKind::BringAll:
         BbRoom::SendBring(0);
@@ -2806,10 +3181,12 @@ void CoopActivate(const CoopItem& item) {
         }
         break;
     case CoopKind::GoTo:
-        Online::GoToHost();
+        BbRoom::SendWarpAsk();
+        break;
+    case CoopKind::Player:
         break;
     case CoopKind::Leave:
-        if (CoopArmed("leave")) BbRoom::LeaveParty();
+        if (CoopArmed("leave")) Online::LeaveHost();
         break;
     case CoopKind::Voice:
         BbSettings::Get().voice_enabled = !BbSettings::Get().voice_enabled;
@@ -2850,6 +3227,7 @@ void CoopInput(int move, int side, bool select, bool back) {
     }
     if (move) {
         coop_row = (coop_row + move + count) % count;
+        while (items[coop_row].kind == CoopKind::Player) coop_row = (coop_row + move + count) % count;
         coop_armed.clear();
     }
     coop_row = std::clamp(coop_row, 0, count - 1);
@@ -2869,9 +3247,22 @@ bool CoopArmedNow(const std::string& what) {
     return coop_armed == what && std::chrono::steady_clock::now() - coop_armed_at < std::chrono::seconds(4);
 }
 
+std::string LampAskPlace() {
+    int slot = 0;
+    std::string who;
+    std::uint32_t lamp = 0;
+    if (!BbRoom::PendingLampAsk(slot, who, lamp)) return {};
+    return " (" + BbEngine::OnlineFixes::LampPlace(lamp) + ")";
+}
+
 std::string CoopLabel(const CoopItem& item, bool chosen) {
     namespace Online = BbEngine::OnlineFixes;
     switch (item.kind) {
+    case CoopKind::LampYes:
+        return chosen && CoopArmedNow("lamp") ? std::string(BbSettings::MenuText("Press again: the whole party travels", "Нажмите ещё раз: весь отряд отправится"))
+                                              : item.name + BbSettings::MenuText(" asks to travel: accept", " просит отправиться: принять") + LampAskPlace();
+    case CoopKind::LampNo:
+        return BbSettings::MenuText("Stay here", "Остаться здесь");
     case CoopKind::Summon:
         return Online::Summoning() ? BbSettings::MenuText("Stop summoning", "Остановить призыв")
                                    : BbSettings::MenuText("Start summon", "Начать призыв");
@@ -2879,7 +3270,13 @@ std::string CoopLabel(const CoopItem& item, bool chosen) {
         return Online::Summoning() ? BbSettings::MenuText("Take back the sign", "Убрать знак")
                                    : BbSettings::MenuText("Send sign", "Отправить знак");
     case CoopKind::GoTo:
-        return BbSettings::MenuText("Go to the host", "К хозяину");
+        return BbRoom::WarpWaiting() ? BbSettings::MenuText("Waiting for the host...", "Ждём хозяина...")
+                                     : BbSettings::MenuText("Ask the host to bring you", "Попросить хозяина перенести вас");
+    case CoopKind::Player:
+        return item.name;
+    case CoopKind::Visitor:
+        return std::string(chosen && CoopArmedNow("kick:" + std::to_string(item.slot)) ? BbSettings::MenuText("Press again to kick ", "Нажмите ещё раз, чтобы выгнать ")
+                                                                                       : BbSettings::MenuText("Kick ", "Выгнать ")) + item.name;
     case CoopKind::Member:
         if (chosen && CoopArmedNow("kick:" + std::to_string(item.slot)))
             return std::string(BbSettings::MenuText("Press again to send home ", "Нажмите ещё раз, чтобы выгнать ")) + item.name;
@@ -2896,6 +3293,8 @@ std::string CoopLabel(const CoopItem& item, bool chosen) {
         return BbSettings::Get().voice_enabled ? BbSettings::MenuText("Voice chat: on", "Голосовой чат: вкл.")
                                                : BbSettings::MenuText("Voice chat: off", "Голосовой чат: выкл.");
     case CoopKind::Mic:
+        if (!BbSettings::Get().voice_mic_muted && BbVoice::MicSilent())
+            return BbSettings::MenuText("Microphone: no sound, check Windows", "Микрофон: нет звука, проверьте Windows");
         return BbSettings::Get().voice_mic_muted ? BbSettings::MenuText("Microphone: muted", "Микрофон: выкл.")
                                                  : BbSettings::MenuText("Microphone: on", "Микрофон: вкл.");
     case CoopKind::Speak:
@@ -2928,13 +3327,15 @@ void CoopMenu() {
     const BbHudGauge::Art* art = gauge ? BbHudGauge::Ready() : nullptr;
     const auto items = CoopItems();
     coop_row = std::clamp(coop_row, 0, int(items.size()) - 1);
+    while (items[coop_row].kind == CoopKind::Player) coop_row = (coop_row + 1) % int(items.size());
+    const auto peers = BbRoom::Connections();
     const float k = base_scale;
     const ImGuiViewport* viewport = ImGui::GetMainViewport();
     ImDrawList* draw = ImGui::GetForegroundDrawList();
     ImFont* font = name_font ? name_font : ImGui::GetFont();
     const float title_px = ImGui::GetFontSize() * 1.9f, item_px = ImGui::GetFontSize() * 1.45f, hint_px = ImGui::GetFontSize() * 1.05f;
     const float row_h = item_px + 18.0f * k;
-    const float width = 620.0f * k;
+    const float width = 760.0f * k;
     const float height = title_px + 70.0f * k + row_h * float(items.size()) + hint_px + 40.0f * k;
     const float cx = viewport->WorkPos.x + viewport->WorkSize.x * 0.5f;
     const float top = viewport->WorkPos.y + (viewport->WorkSize.y - height) * 0.5f;
@@ -2972,7 +3373,7 @@ void CoopMenu() {
         const CoopItem& item = items[i];
         const ImVec2 ra(a.x + 40.0f * k, y), rb(b.x - 40.0f * k, y + row_h);
         const bool over = mouse.x >= ra.x && mouse.x < rb.x && mouse.y >= ra.y && mouse.y < rb.y;
-        if (over && moved) coop_row = i;
+        if (over && moved && item.kind != CoopKind::Player) coop_row = i;
         const bool chosen = i == coop_row;
         if (chosen) {
             const float mid = (ra.x + rb.x) * 0.5f;
@@ -2985,11 +3386,20 @@ void CoopMenu() {
         const float ty = y + (row_h - item_px) * 0.5f;
         if (item.kind == CoopKind::Member) {
             text(item_px, ImVec2(ra.x + 20.0f * k, ty), chosen ? parchment : faded, label.c_str());
+            const float label_end = ra.x + 20.0f * k + font->CalcTextSizeA(item_px, FLT_MAX, 0.0f, label.c_str()).x + 16.0f * k;
+            const BbRoom::PeerStatus* peer = FindPeer(peers, item.slot);
             const char* bring = BbSettings::MenuText("Bring", "Призвать");
             const char* kick = BbSettings::MenuText("Kick", "Выгнать");
             const float kick_w = font->CalcTextSizeA(item_px, FLT_MAX, 0.0f, kick).x;
             const float bring_w = font->CalcTextSizeA(item_px, FLT_MAX, 0.0f, bring).x;
             const float kick_x = rb.x - 20.0f * k - kick_w, bring_x = kick_x - 40.0f * k - bring_w;
+            if (peer && (peer->asked || BbSettings::Get().coop_status)) {
+                std::string status = BbSettings::Get().coop_status ? ConnectionText(*peer) : std::string();
+                if (peer->asked) status = BbSettings::MenuText("asks to come", "просит перенести");
+                const ImU32 tone = peer->asked ? parchment : ConnectionColor(peer->state);
+                if (label_end + font->CalcTextSizeA(hint_px, FLT_MAX, 0.0f, status.c_str()).x < bring_x)
+                    text(hint_px, ImVec2(label_end, ty + (item_px - hint_px) * 0.5f), tone, status.c_str());
+            }
             const bool on_bring = chosen && coop_column == 0, on_kick = chosen && coop_column == 1;
             text(item_px, ImVec2(bring_x, ty), on_bring ? parchment : faded, bring);
             text(item_px, ImVec2(kick_x, ty), on_kick ? red : faded, kick);
@@ -3005,6 +3415,13 @@ void CoopMenu() {
                     coop_column = 1;
                     CoopActivate(item);
                 }
+            }
+        } else if (item.kind == CoopKind::Player) {
+            text(item_px, ImVec2(ra.x + 20.0f * k, ty), faded, label.c_str());
+            if (const BbRoom::PeerStatus* peer = FindPeer(peers, item.slot)) {
+                const std::string status = ConnectionText(*peer);
+                const float status_w = font->CalcTextSizeA(hint_px, FLT_MAX, 0.0f, status.c_str()).x;
+                text(hint_px, ImVec2(rb.x - 20.0f * k - status_w, ty + (item_px - hint_px) * 0.5f), ConnectionColor(peer->state), status.c_str());
             }
         } else {
             const ImVec2 size = font->CalcTextSizeA(item_px, FLT_MAX, 0.0f, label.c_str());
@@ -3064,6 +3481,8 @@ void Render(vk::CommandBuffer cmdbuf, vk::ImageView view, vk::Extent2D extent) {
     if (!menu_open) {
         SummonNote();
         Announcement();
+        ReconnectNote();
+        PartyLines();
     }
     if (prompt_active && !menu_open) {
         TextPrompt();

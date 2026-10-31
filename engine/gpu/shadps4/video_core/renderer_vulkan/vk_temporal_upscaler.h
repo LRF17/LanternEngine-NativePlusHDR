@@ -68,6 +68,12 @@ public:
 
     /// A blended (transparent) draw into the scene color that is not a full-screen pass: the
     /// first one of a frame snapshots the opaque scene for the reactive mask.
+    [[nodiscard]] u64 TriggerHash() const noexcept {
+        return trigger_hash;
+    }
+    [[nodiscard]] VideoCore::ImageId SceneColor() const noexcept {
+        return scene_color;
+    }
     void OnBlendedSceneDraw();
 
     /// A full-screen pass into the scene color: after a snapshot, the reactive mask is taken
@@ -238,6 +244,14 @@ private:
     VideoCore::ImageId scene_color{};
     bool done_this_frame = false;
     u32 preset_file_frames = 0; ///< BB_PRESET_FILE polling
+    u32 reset_frames = 0, reset_window_frames = 0;
+    std::chrono::steady_clock::time_point reset_window = std::chrono::steady_clock::now();
+    float slow_window_ms = 0.0f;
+    u32 slow_window_frames = 0, slow_frames = 0, slow_guard_used = 0;
+    bool Fsr4TooSlow(float frame_ms);
+    float jitter_speed = 0.0f;
+    float JitterAmount();
+    [[nodiscard]] float CameraSpeed() const;
     int applied_output = -1;
     bool snapshot_taken = false;
     bool opaque_valid = false;
@@ -264,6 +278,7 @@ private:
     vk::UniqueImageView ui_depth_view;
     bool depth_blit = false;
     bool scaled_session = false;
+    bool early_upscale = false;
     u32 ui_width = 0, ui_height = 0;
     u32 render_width = 0, render_height = 0;
     vk::Format ui_format = vk::Format::eUndefined;

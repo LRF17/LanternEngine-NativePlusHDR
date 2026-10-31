@@ -68,6 +68,7 @@ namespace BloodborneLauncher
 
         // The tabs (Modern) and the sidebar's entries (Classic), by page.
         private readonly List<RadioButton> _tabs = new(), _classic = new();
+        private RadioButton _savesItem = null!, _classicSaves = null!;
         private RadioButton _playItem = null!, _controlsItem = null!, _onlineItem = null!, _settingsItem = null!, _moreItem = null!;
         private RadioButton _classicPlay = null!, _classicControls = null!, _classicMods = null!, _classicOnline = null!,
             _classicSettings = null!, _classicSettingsBottom = null!, _classicEngine = null!, _classicOutput = null!;
@@ -193,6 +194,12 @@ namespace BloodborneLauncher
                     Prompt.Confirm(L.T("Switch layout"), L.T("The launcher restarts to change its layout."), L.T("Restart now"));
                 else if (_directPlay)
                     _ = PlayDirectAsync();
+                // The setup guide: with --setup, or once on a first start whose game folder is not
+                // ready (a game already set up never sees it). The settings for this PC follow it.
+                else if (Prompt.SnapshotPath == null && (Environment.GetCommandLineArgs().Contains("--setup") ||
+                         (!ws.Settings.Bool("setup_shown") && Paths.IsPortDir(Paths.PortDir) &&
+                          GameCheck.Inspect(GameEnvironment.GameDir(ws.Settings)).Health != Health.Good)))
+                    SetupGuide.Open(firstRun: true);
                 // Once: the settings that suit this PC, shown before anything changes.
                 else if (!ws.Settings.Bool("hardware_offered") && Paths.IsPortDir(Paths.PortDir))
                     OfferBestSettings(firstRun: true);
@@ -200,6 +207,8 @@ namespace BloodborneLauncher
                 // newer engine or the one 0.9.33 ran, the player's choice. Nothing changes unasked.
                 else if (ws.Settings.Bool("hardware_offered") && !ws.Settings.Bool("engine_preset_asked") && Paths.IsPortDir(Paths.PortDir))
                     AskEnginePreset();
+                else if (ws.Settings.Bool("hardware_offered") && TestedSettings.ShouldAsk(ws.Ini, ws.Settings) && Paths.IsPortDir(Paths.PortDir))
+                    AskTestedSettings();
             }, DispatcherPriority.ApplicationIdle);
         }
 
@@ -498,9 +507,11 @@ namespace BloodborneLauncher
                 return tab;
             }
             _playItem = Tab(L.T("Play"), typeof(PlayPage));
+            _savesItem = Tab(L.T("Saves"), typeof(SavesPage));
             Tab(L.T("Display"), typeof(DisplayPage));
             Tab(L.T("Graphics"), typeof(GraphicsPage));
             _controlsItem = Tab(L.T("Controls"), typeof(ControlsPage));
+            Tab(L.T("Looks"), typeof(LooksPage));
             Tab(L.T("Trophies"), typeof(TrophiesPage));
             _onlineItem = Tab(L.T("Online"), typeof(OnlinePage));
             _settingsItem = Tab(L.T("Settings"), typeof(SettingsPage));
@@ -545,7 +556,9 @@ namespace BloodborneLauncher
             // The hunt, how it looks, the workshop's mods and cheats, the Lantern Engine itself.
             Header(L.T("HUNT"));
             _classicPlay = Item(SymbolRegular.Play24, L.T("Play"), typeof(PlayPage));
+            _classicSaves = Item(SymbolRegular.Save24, L.T("Saves"), typeof(SavesPage));
             _classicControls = Item(SymbolRegular.XboxController24, L.T("Controls"), typeof(ControlsPage));
+            Item(SymbolRegular.Sparkle24, L.T("Looks"), typeof(LooksPage));
             Item(SymbolRegular.Trophy24, L.T("Trophies"), typeof(TrophiesPage));
             _classicOnline = Item(SymbolRegular.Globe24, L.T("Online"), typeof(OnlinePage));
             Header(L.T("SIGHT"), new Thickness(18, 18, 0, 6));
@@ -556,6 +569,7 @@ namespace BloodborneLauncher
             // Cheats beside Mods & patches, once the engine applies them (as More's Cheats tab).
             if (CheatsPage.Supported)
                 _classicCheats = Item(SymbolRegular.Beaker24, L.T("Cheats"), typeof(CheatsPage));
+            Item(SymbolRegular.Save24, L.T("Save editor"), typeof(SaveEditorPage));
             Header(L.T("LANTERN"), new Thickness(18, 18, 0, 6));
             _classicSettings = Item(SymbolRegular.Settings24, L.T("Settings"), typeof(SettingsPage));
             _classicEngine = Item(SymbolRegular.Wrench24, L.T("Engine switches"), typeof(EnginePage));
@@ -618,6 +632,30 @@ namespace BloodborneLauncher
 
         /// <summary>Graphics › Engine preset, asked once: New or Legacy (0.9.33). Closed without a
         /// choice, it asks again at the next start.</summary>
+        private void AskTestedSettings()
+        {
+            var ws = Workspace.Current;
+            var lines = string.Join("\n", TestedSettings.Differences(ws.Ini, ws.Settings).Select(d => TestedSettings.Describe(d, ws.Ini, ws.Settings)));
+            var choice = Prompt.Choose(L.T("This beta was tested with these settings"),
+                L.T("Some of yours are different, so your game may not run the way it did in testing. If you use the tested settings, yours are saved first, and Settings › Beta tested settings brings them back.\n\n") + lines,
+                L.T("Keep mine"), L.T("Use tested settings"));
+            if (choice < 0) return;
+            TestedSettings.MarkAsked(ws.Settings);
+            if (choice == 1)
+            {
+                try
+                {
+                    var file = TestedSettings.Use(ws.Ini, ws.Settings);
+                    ws.Log(L.F($"Using the settings this beta was tested with. Yours are saved in {file}"), LogLevel.Good);
+                }
+                catch (Exception e) when (e is System.IO.IOException or UnauthorizedAccessException or System.Text.Json.JsonException)
+                {
+                    Prompt.Tell(L.T("Your settings were not changed"), L.T("They could not be saved first: ") + e.Message);
+                }
+            }
+            ws.SaveSoon();
+        }
+
         private void AskEnginePreset()
         {
             var ws = Workspace.Current;
@@ -768,6 +806,11 @@ namespace BloodborneLauncher
             {
                 image = await Task.Run(() =>
                 {
+                    if (AppIcon.Backdrop(mode) is { } builtIn)
+                    {
+                        using var carried = typeof(AppIcon).Assembly.GetManifestResourceStream(builtIn);
+                        if (carried != null) return Bitmap.DecodeToWidth(carried, width);
+                    }
                     string? art = mode == "custom" && File.Exists(own)
                         ? own
                         : new[] { "pic1.png", "pic0.png" }
@@ -969,6 +1012,7 @@ namespace BloodborneLauncher
             var item = _sidebarNav
                 ? page switch
                 {
+                    "saves" => _classicSaves,
                     "output" => _classicOutput,
                     "online" => _classicOnline,
                     "advanced" => _classicSettings,
@@ -980,6 +1024,7 @@ namespace BloodborneLauncher
                 }
                 : page switch
                 {
+                    "saves" => _savesItem,
                     "online" => _onlineItem,
                     "advanced" => _settingsItem,
                     "output" or "mods" or "engine" => _moreItem,
@@ -1459,6 +1504,17 @@ namespace BloodborneLauncher
                 GameEnvironment.ResolutionPatchChoice = choice == 1 ? "keep" : "skip";
                 ws.Log(choice == 1 ? L.F($"{names}: kept on with the {outW} × {outH} output.")
                     : L.F($"{names}: left out; the output resolution sets the picture."), LogLevel.Step);
+            }
+
+            // No game folder with eboot.bin: the engine would only log "No eboot.bin". The setup
+            // guide says what is missing instead.
+            if (!GameRunner.Custom(s) && !System.IO.File.Exists(System.IO.Path.Combine(GameEnvironment.GameDir(s), "eboot.bin")))
+            {
+                if (Prompt.Choose(L.T("The game is not set up yet"),
+                        L.T("The launcher has no game folder with eboot.bin in it, so the game cannot start. The setup guide shows where your game files go and checks them."),
+                        L.T("Cancel"), L.T("Open the setup guide")) == 1)
+                    SetupGuide.Open();
+                return;
             }
 
             // A game left running in the background (an earlier start that never ended, or another

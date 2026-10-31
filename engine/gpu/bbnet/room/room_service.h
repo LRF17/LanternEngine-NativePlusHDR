@@ -9,6 +9,8 @@
 
 #include <nlohmann/json.hpp>
 
+#include "room_status.h"
+
 namespace BbRoom {
 
 struct Vitals {
@@ -25,6 +27,12 @@ void SendVitals(const Vitals& own);
 std::vector<Vitals> Party(int max_age_ms);
 void SendTravel(std::uint32_t lamp, const std::vector<std::uint8_t>& world_flags = {});
 bool TakeTravel(std::uint32_t& lamp, std::vector<std::uint8_t>* world_flags = nullptr);
+void SendStageTravel(std::uint32_t map, std::int32_t point, const std::vector<std::uint8_t>& world_flags = {});
+bool TakeStageTravel(std::uint32_t& map, std::int32_t& point, std::vector<std::uint8_t>* world_flags = nullptr);
+void SendWorldFlags(const std::vector<std::uint8_t>& part, int target = 0);
+std::vector<std::vector<std::uint8_t>> TakeWorldFlags();
+void SendWorldAsk();
+std::vector<int> TakeWorldAsks();
 void SendProgress(const std::vector<std::uint32_t>& flags, int target = 0);
 std::vector<std::uint32_t> TakeProgress();
 void SendBossLot(std::int32_t lot, int target);
@@ -56,9 +64,32 @@ bool CurrentNotice(std::string& text);
 bool CurrentAnnouncement(std::string& text, float& alpha);
 std::vector<std::pair<int, std::string>> PartyMembers();
 bool Kick(int slot);
+std::string NetworkId();
+std::string PlainName(const std::string& network_id);
 bool LeaveParty();
+bool IsDevSlot(int slot);
+void SetOpenRoom(bool on);
+bool OpenRoomAllowed();
+bool OpenRoomListed();
+bool IsVisitorSlot(int slot);
+void TakeDownSign();
+void NoteSentHome();
+bool TakeSentHome();
 void SendBring(int target);
 bool TakeBring();
+std::vector<PeerStatus> Connections();
+std::vector<PartyLine> PartyLines();
+bool CurrentReconnect(ReconnectNotice& out);
+bool LinkUp();
+void SendWarpAsk();
+bool WarpWaiting();
+void SetWarpRequests(bool on);
+void SendLampAsk(std::uint32_t lamp);
+bool PendingLampAsk(int& slot, std::string& who, std::uint32_t& lamp);
+void AnswerLampAsk(bool yes);
+void NoteBringFar();
+void NoteTravelLost();
+void NoteStayedWithParty();
 void SetVoice(bool on);
 void SendVoice(const std::vector<std::uint8_t>& packet);
 std::vector<std::pair<int, std::vector<std::uint8_t>>> TakeVoice();

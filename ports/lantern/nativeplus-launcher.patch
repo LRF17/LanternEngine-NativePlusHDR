@@ -1,5 +1,5 @@
 diff --git a/launcher/windows/BloodborneLauncher/Core/Choices.cs b/launcher/windows/BloodborneLauncher/Core/Choices.cs
-index 601a2a9..c06454e 100644
+index 7eaba04..2eb3ae5 100644
 --- a/launcher/windows/BloodborneLauncher/Core/Choices.cs
 +++ b/launcher/windows/BloodborneLauncher/Core/Choices.cs
 @@ -1,4 +1,4 @@
@@ -8,7 +8,7 @@ index 601a2a9..c06454e 100644
  {
      /// <summary>A drop-down entry. Note is shown under the row while this entry is selected.</summary>
      public sealed record Choice(string Label, string Value, string? Note = null);
-@@ -217,7 +217,7 @@
+@@ -246,7 +246,7 @@
  
          public static readonly Choice[] HdrPaperWhite =
          {
@@ -17,7 +17,7 @@ index 601a2a9..c06454e 100644
              new(L.T("250 nits"), "250"), new(L.T("300 nits"), "300"), new(L.T("400 nits"), "400"),
          };
  
-@@ -246,19 +246,28 @@
+@@ -275,19 +275,28 @@
  
          public static readonly Choice[] HdrMode =
          {
@@ -182,7 +182,7 @@ index 0000000..e5cbd26
 +    }
 +}
 diff --git a/launcher/windows/BloodborneLauncher/Core/GameEnvironment.cs b/launcher/windows/BloodborneLauncher/Core/GameEnvironment.cs
-index 0ecbbdc..70b605f 100644
+index 5322406..c205205 100644
 --- a/launcher/windows/BloodborneLauncher/Core/GameEnvironment.cs
 +++ b/launcher/windows/BloodborneLauncher/Core/GameEnvironment.cs
 @@ -1,4 +1,4 @@
@@ -191,7 +191,7 @@ index 0ecbbdc..70b605f 100644
  
  namespace BloodborneLauncher.Core
  {
-@@ -268,6 +268,10 @@ namespace BloodborneLauncher.Core
+@@ -270,6 +270,10 @@ namespace BloodborneLauncher.Core
          /// <summary>SDL3 hints for controllers, given to the game and used by the launcher's own SDL (SdlPad).</summary>
          public static IEnumerable<(string Key, string Value)> SdlHints()
          {
@@ -232,7 +232,7 @@ index 0f5867f..3419404 100644
                  process.ErrorDataReceived += (_, e) => { if (e.Data != null) Emit(e.Data); };
                  process.Exited += (_, _) =>
 diff --git a/launcher/windows/BloodborneLauncher/Core/LauncherSettings.cs b/launcher/windows/BloodborneLauncher/Core/LauncherSettings.cs
-index d954ebb..b713326 100644
+index ab53fef..b3689d2 100644
 --- a/launcher/windows/BloodborneLauncher/Core/LauncherSettings.cs
 +++ b/launcher/windows/BloodborneLauncher/Core/LauncherSettings.cs
 @@ -47,7 +47,7 @@ namespace BloodborneLauncher.Core
@@ -307,7 +307,7 @@ index 9221006..f5ec50c 100644
          public static readonly string ConfigFile = Path.Combine(ConfigDir, "settings.json");
  
 diff --git a/launcher/windows/BloodborneLauncher/Core/Updater.cs b/launcher/windows/BloodborneLauncher/Core/Updater.cs
-index 7c06f25..362df73 100644
+index 1205bc8..09e6e45 100644
 --- a/launcher/windows/BloodborneLauncher/Core/Updater.cs
 +++ b/launcher/windows/BloodborneLauncher/Core/Updater.cs
 @@ -1,4 +1,4 @@
@@ -325,7 +325,7 @@ index 7c06f25..362df73 100644
          public static string ReleasesPage => $"https://github.com/{Repository}/releases";
  
 -        /// <summary>The engine build this launcher is made for (package.json "engine").</summary>
--        public const string EngineId = "lantern-room15-b23";
+-        public const string EngineId = "lantern-room15-b26";
 +        /// <summary>The engine build this launcher is made for (package.json "engine"). A release whose
 +        /// engine changed needs a new one: with the same, the updater replaces the launcher alone.</summary>
 +        public const string EngineId = "lantern-fps95-nativeplus-v5";
@@ -388,7 +388,7 @@ index 7c06f25..362df73 100644
          }
  
 diff --git a/launcher/windows/BloodborneLauncher/MainWindow.xaml b/launcher/windows/BloodborneLauncher/MainWindow.xaml
-index 26f31a3..bbf853b 100644
+index 1b9249f..0d90eaa 100644
 --- a/launcher/windows/BloodborneLauncher/MainWindow.xaml
 +++ b/launcher/windows/BloodborneLauncher/MainWindow.xaml
 @@ -5,7 +5,7 @@
@@ -528,7 +528,7 @@ index fd86212..9da3f43 100644
              Group(L.T("Language"));
              ComboRow(SymbolRegular.LocalLanguage24, L.T("In-game menu language"), L.T("The port's settings menu (Insert or L3 + R3)"),
 diff --git a/launcher/windows/BloodborneLauncher/Views/GraphicsPage.cs b/launcher/windows/BloodborneLauncher/Views/GraphicsPage.cs
-index 11ee235..b37c169 100644
+index 0830ddb..ddad150 100644
 --- a/launcher/windows/BloodborneLauncher/Views/GraphicsPage.cs
 +++ b/launcher/windows/BloodborneLauncher/Views/GraphicsPage.cs
 @@ -1,4 +1,4 @@

@@ -107,7 +107,7 @@ namespace BloodborneLauncher.Views
 
             SettingCombo(SymbolRegular.ImageEdit24, L.T("Background"),
                 SettingRow.Classic ? L.T("Shown in the Modern layout (Classic's panes are solid)") : L.T("The picture behind the glass panes"),
-                new[] { new Choice(L.T("Game artwork"), "game"), new Choice(L.T("Your picture"), "custom"), new Choice(L.T("None"), "none") },
+                new[] { new Choice(L.T("Purple lantern"), "lantern"), new Choice(L.T("Orange lantern"), "lantern-orange"), new Choice(L.T("Game artwork"), "game"), new Choice(L.T("Your picture"), "custom"), new Choice(L.T("None"), "none") },
                 "ui_background", changed: () =>
                 {
                     ShowAppearance();
@@ -202,6 +202,12 @@ namespace BloodborneLauncher.Views
                 L.T("It works with the same kind of graphics card; a catalog adds to your shaders, it never replaces them"),
                 Row(SmallButton(L.T("Export catalog"), SymbolRegular.Save24, (_, _) => ExportShaderCache()),
                     SmallButton(L.T("Add catalog"), SymbolRegular.FolderOpen24, (_, _) => ImportShaderCache())), out _));
+
+            Group(L.T("Beta tested settings"));
+            Add(Card(SymbolRegular.ArrowReset24, L.T("Tested settings"),
+                L.T("Use the settings this beta was tested with, or go back to your own. Yours are saved before anything changes"), Row(
+                SmallButton(L.T("Use tested"), SymbolRegular.CheckmarkCircle24, (_, _) => UseTestedSettings()),
+                SmallButton(L.T("Back to mine"), SymbolRegular.ArrowUndo24, (_, _) => RestoreMySettings())), out _));
 
             Group(L.T("Share settings"));
             Add(Card(SymbolRegular.Share24, L.T("Share your settings"),
@@ -671,6 +677,47 @@ namespace BloodborneLauncher.Views
             catch (Exception e) when (e is IOException or UnauthorizedAccessException)
             {
                 Prompt.Tell(L.T("Could not import"), e.Message);
+                return;
+            }
+            Restart();
+        }
+
+        private void UseTestedSettings()
+        {
+            if (TestedSettings.Differences(Ini, S).Count == 0)
+            {
+                Prompt.Tell(L.T("Tested settings"), L.T("You are already using them."));
+                return;
+            }
+            try
+            {
+                var file = TestedSettings.Use(Ini, S);
+                TestedSettings.MarkAsked(S);
+                Ws.Log(L.F($"Using the settings this beta was tested with. Yours are saved in {file}"), LogLevel.Good);
+            }
+            catch (Exception e) when (e is IOException or UnauthorizedAccessException or System.Text.Json.JsonException)
+            {
+                Prompt.Tell(L.T("Your settings were not changed"), L.T("They could not be saved first: ") + e.Message);
+                return;
+            }
+            Restart();
+        }
+
+        private void RestoreMySettings()
+        {
+            if (TestedSettings.SavedFile() == null)
+            {
+                Prompt.Tell(L.T("Tested settings"), L.T("You have no saved settings yet: they are saved when you first use the tested ones."));
+                return;
+            }
+            try
+            {
+                TestedSettings.Restore(Ini, S);
+                Ws.Log(L.T("Your own settings are back."), LogLevel.Good);
+            }
+            catch (Exception e) when (e is IOException or UnauthorizedAccessException or InvalidDataException or System.Text.Json.JsonException)
+            {
+                Prompt.Tell(L.T("Tested settings"), L.T("Could not bring them back: ") + e.Message);
                 return;
             }
             Restart();
