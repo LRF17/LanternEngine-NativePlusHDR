@@ -307,7 +307,7 @@ index 9221006..f5ec50c 100644
          public static readonly string ConfigFile = Path.Combine(ConfigDir, "settings.json");
  
 diff --git a/launcher/windows/BloodborneLauncher/Core/Updater.cs b/launcher/windows/BloodborneLauncher/Core/Updater.cs
-index 7c06f25..2c89388 100644
+index 7c06f25..362df73 100644
 --- a/launcher/windows/BloodborneLauncher/Core/Updater.cs
 +++ b/launcher/windows/BloodborneLauncher/Core/Updater.cs
 @@ -1,4 +1,4 @@
@@ -328,7 +328,7 @@ index 7c06f25..2c89388 100644
 -        public const string EngineId = "lantern-room15-b23";
 +        /// <summary>The engine build this launcher is made for (package.json "engine"). A release whose
 +        /// engine changed needs a new one: with the same, the updater replaces the launcher alone.</summary>
-+        public const string EngineId = "lantern-fps95-nativeplus-v4";
++        public const string EngineId = "lantern-fps95-nativeplus-v5";
  
          public const string ExeName = "Lantern Engine.exe";
          /// <summary>The launcher's name before 0.9.34 beta 8 (now a forwarder to ExeName).</summary>
