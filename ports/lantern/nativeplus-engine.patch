@@ -5757,10 +5757,10 @@ index 65fb22f..8e38232 100644
      std::optional<const Shader::Gcn::FetchShaderData> fetch_shader{};
 diff --git a/gpu/shadps4/video_core/renderer_vulkan/vk_hdr_channel.cpp b/gpu/shadps4/video_core/renderer_vulkan/vk_hdr_channel.cpp
 new file mode 100644
-index 0000000..20551dd
+index 0000000..4cbec4d
 --- /dev/null
 +++ b/gpu/shadps4/video_core/renderer_vulkan/vk_hdr_channel.cpp
-@@ -0,0 +1,724 @@
+@@ -0,0 +1,748 @@
 +// SPDX-FileCopyrightText: Copyright 2026 bbport
 +// SPDX-License-Identifier: GPL-2.0-or-later
 +
@@ -5782,7 +5782,6 @@ index 0000000..20551dd
 +#include "core/emulator_settings.h"
 +#include "shader_recompiler/backend/bindings.h"
 +#include "shader_recompiler/info.h"
-+#include "shader_recompiler/profile.h"
 +#include "shader_recompiler/runtime_info.h"
 +#include "video_core/host_shaders/bb_color_grading_frag.h"
 +#include "video_core/host_shaders/bb_color_grading_hw_frag.h"
@@ -5956,19 +5955,21 @@ index 0000000..20551dd
 +    bool per_vertex;
 +};
 +
-+/// A game pixel shader's interface, from what it was compiled from rather than from its SPIR-V:
++/// A game pixel shader's interface, from what it was compiled from rather than from its names:
 +/// Lantern's compilers (the recompiler's EmitContext, and the lifter, given the same Bindings) bind
 +/// its buffers from start.unified, then its images, then its samplers; input N at the location of
-+/// its param_index (one further with clip distance emulation); render target N at location N. The
++/// its param_index (one further with clip distance emulation); render target 0 at location 0. The
 +/// lifter's SPIR-V has no names; both lay a shader out the same (985 shaders of a cache, 0.9.39
-+/// beta 26: every binding the lifter declares is the recompiler's, of the same kind).
++/// beta 26: every binding the lifter declares is the recompiler's, of the same kind). Only what a
++/// cache record keeps is read (InfoPersistent, the specialization's RuntimeInfo and Bindings): a
++/// loaded Info has neither `stores` nor `fs_interpolation`. Whether an input is read per vertex
++/// is in the SPIR-V's own decorations, which both compilers write.
 +struct GameLayout {
 +    std::vector<u32> buffers; ///< bindings
 +    u32 first_buffer = 0;     ///< the first buffer's index (Bindings::buffer: ubo_N's N)
 +    bool uniform = false;     ///< a uniform buffer (else storage buffers, the legacy compiler's)
 +    std::vector<u32> images, samplers;
 +    std::vector<std::optional<GameInput>> inputs; ///< by attribute (fs_in_attrN)
-+    bool color0 = false;       ///< writes render target 0 (frag_color0, location 0)
 +    bool mip_bindings = false; ///< an image with a binding per mip level: not laid out here
 +
 +    std::optional<GameInput> Input(int attr) const {
@@ -6008,6 +6009,32 @@ index 0000000..20551dd
 +    for (size_t i = 0; i < game.info.samplers.size(); ++i) {
 +        out.samplers.push_back(binding++);
 +    }
++    // Inputs read per vertex (PerVertexKHR, or AMD's ExplicitInterpAMD): their locations.
++    constexpr u32 SpvDecorationPerVertexKHR = 5285, SpvDecorationExplicitInterpAMD = 4999;
++    std::unordered_map<u32, u32> location_of;
++    std::unordered_set<u32> per_vertex_ids;
++    for (size_t i = 5; i < game.spv.size();) {
++        const u32 count = game.spv[i] >> 16, opcode = game.spv[i] & 0xffff;
++        if (count == 0 || i + count > game.spv.size()) {
++            break;
++        }
++        if (opcode == SpvOpDecorate && count >= 3) {
++            const u32 decoration = game.spv[i + 2];
++            if (decoration == SpvDecorationLocation && count >= 4) {
++                location_of[game.spv[i + 1]] = game.spv[i + 3];
++            } else if (decoration == SpvDecorationPerVertexKHR ||
++                       decoration == SpvDecorationExplicitInterpAMD) {
++                per_vertex_ids.insert(game.spv[i + 1]);
++            }
++        }
++        i += count;
++    }
++    std::unordered_set<u32> per_vertex_locations;
++    for (const u32 id : per_vertex_ids) {
++        if (const auto it = location_of.find(id); it != location_of.end()) {
++            per_vertex_locations.insert(it->second);
++        }
++    }
 +    const auto& fs = game.runtime.hw.fs;
 +    const bool clip = fs.clip_distance_emulation;
 +    const s32 count = std::min<s32>(s32(fs.num_inputs) - (clip ? 1 : 0), s32(fs.inputs.size()));
@@ -6017,12 +6044,9 @@ index 0000000..20551dd
 +            out.inputs.emplace_back();
 +            continue;
 +        }
-+        out.inputs.push_back(GameInput{
-+            u32(input.param_index) + (clip ? 1u : 0u),
-+            game.info.fs_interpolation[i].primary == Shader::Qualifier::PerVertex &&
-+                game.profile.supports_fragment_shader_barycentric});
++        const u32 location = u32(input.param_index) + (clip ? 1u : 0u);
++        out.inputs.push_back(GameInput{location, per_vertex_locations.contains(location)});
 +    }
-+    out.color0 = game.info.stores.GetAny(Shader::IR::Attribute::RenderTarget0);
 +    return out;
 +}
 +
@@ -6058,7 +6082,7 @@ index 0000000..20551dd
 +        check(fmt::format("fs_in_attr{}", i), location, true);
 +        check(fmt::format("fs_in_attr{}_p", i), location, true);
 +    }
-+    check("frag_color0", layout.color0 ? std::optional<u32>{0u} : std::nullopt, true);
++    check("frag_color0", 0u, true);
 +    if (!differs.empty()) {
 +        LOG_WARNING(Render_Vulkan, "Native+: shader {:08x}: its names and its layout differ:{}",
 +                    u32(pgm_hash), differs);
@@ -6310,7 +6334,7 @@ index 0000000..20551dd
 +        const auto value = in.Binding(name);
 +        ok = ok && value && SetDecoration(spv, ours, name, SpvDecorationBinding, *value);
 +    }
-+    ok = ok && !in.mip_bindings && in.color0 &&
++    ok = ok && !in.mip_bindings &&
 +         SetDecoration(spv, ours, "frag_color0", SpvDecorationLocation, 0);
 +    if (reads_input) {
 +        // Ours is called fs_in_attr0 in both builds.
@@ -6487,10 +6511,10 @@ index 0000000..20551dd
 +} // namespace Vulkan
 diff --git a/gpu/shadps4/video_core/renderer_vulkan/vk_hdr_channel.h b/gpu/shadps4/video_core/renderer_vulkan/vk_hdr_channel.h
 new file mode 100644
-index 0000000..77e3415
+index 0000000..28fc1dd
 --- /dev/null
 +++ b/gpu/shadps4/video_core/renderer_vulkan/vk_hdr_channel.h
-@@ -0,0 +1,126 @@
+@@ -0,0 +1,124 @@
 +// SPDX-FileCopyrightText: Copyright 2026 bbport
 +// SPDX-License-Identifier: GPL-2.0-or-later
 +//
@@ -6517,7 +6541,6 @@ index 0000000..77e3415
 +namespace Shader {
 +struct Info;
 +struct RuntimeInfo;
-+struct Profile;
 +namespace Backend {
 +struct Bindings;
 +}
@@ -6536,7 +6559,6 @@ index 0000000..77e3415
 +    struct GameShader {
 +        const Shader::Info& info;
 +        const Shader::RuntimeInfo& runtime;
-+        const Shader::Profile& profile;
 +        const Shader::Backend::Bindings& start;
 +        std::span<const u32> spv;
 +    };
@@ -6638,7 +6660,7 @@ index 634a9cd..706ca6c 100644
      return s.hdr_output.load(std::memory_order_relaxed) != BbSettings::HdrOutputOff &&
             s.hdr_mode.load(std::memory_order_relaxed) == BbSettings::HdrModeNative;
 diff --git a/gpu/shadps4/video_core/renderer_vulkan/vk_pipeline_cache.cpp b/gpu/shadps4/video_core/renderer_vulkan/vk_pipeline_cache.cpp
-index 6d0c678..09b54a0 100644
+index 6d0c678..0f4e162 100644
 --- a/gpu/shadps4/video_core/renderer_vulkan/vk_pipeline_cache.cpp
 +++ b/gpu/shadps4/video_core/renderer_vulkan/vk_pipeline_cache.cpp
 @@ -12,6 +12,8 @@
@@ -6732,7 +6754,7 @@ index 6d0c678..09b54a0 100644
 +    // recompiles share one cache.
 +    std::vector<u32> stored;
 +    if (info.sw_stage == Shader::SwStage::Fragment && HdrChannel::Native16()) {
-+        const HdrChannel::GameShader game{info, runtime_info, profile, binding_before, spv};
++        const HdrChannel::GameShader game{info, runtime_info, binding_before, spv};
 +        HdrChannel::NoteGameShader(game);
 +        auto replacement = HdrChannel::ChainReplacement(game);
 +        if (!replacement.empty()) {
@@ -6772,7 +6794,7 @@ index 29621d5..a979a13 100644
      if (uses_tone_curve) {
          const Shader::Native::ToneCurvePush tone = ToneCurveParams();
 diff --git a/gpu/shadps4/video_core/renderer_vulkan/vk_pipeline_serialization.cpp b/gpu/shadps4/video_core/renderer_vulkan/vk_pipeline_serialization.cpp
-index b2278ce..ddfc8e1 100644
+index b2278ce..ff78d78 100644
 --- a/gpu/shadps4/video_core/renderer_vulkan/vk_pipeline_serialization.cpp
 +++ b/gpu/shadps4/video_core/renderer_vulkan/vk_pipeline_serialization.cpp
 @@ -22,6 +22,7 @@
@@ -6790,7 +6812,7 @@ index b2278ce..ddfc8e1 100644
 +    // Cached composites need the same companion preparation as freshly translated shaders, and the
 +    // chain passes Native+'s replacements: the cache holds the game's own shaders (CompileModule).
 +    if (HdrChannel::Native16() && program->info.sw_stage == Shader::SwStage::Fragment) {
-+        const HdrChannel::GameShader game{program->info, spec.runtime_info, profile, spec.start,
++        const HdrChannel::GameShader game{program->info, spec.runtime_info, spec.start,
 +                                          spv};
 +        HdrChannel::NoteGameShader(game);
 +        if (auto replacement = HdrChannel::ChainReplacement(game);
