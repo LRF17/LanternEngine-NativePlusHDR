@@ -77,7 +77,7 @@ def assemble(engine, overlay, destination, cache):
     version = os.environ.get('BB_RELEASE_VERSION') or (Path(__file__).with_name('VERSION')
                                                         .read_text(encoding='utf-8').strip())
     (destination / 'package.json').write_text(json.dumps({
-        'version': version, 'engine': 'lantern-fps95-nativeplus-v5',
+        'version': version, 'engine': 'lantern-fps95-nativeplus-v6',
         'source': 'https://github.com/LRF17/LanternEngine-NativePlusHDR/tree/lantern-Native+HDR',
         'runtime_resources': 'v0.9.39-beta.30', 'python': '3.12.10',
     }, indent=2), encoding='utf-8')

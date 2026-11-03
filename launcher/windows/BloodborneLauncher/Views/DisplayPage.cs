@@ -1,4 +1,4 @@
-using BloodborneLauncher.Core;
+﻿using BloodborneLauncher.Core;
 using Wpf.Ui.Controls;
 using System.Windows;
 using System.Windows.Controls;

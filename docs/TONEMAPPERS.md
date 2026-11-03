@@ -1,6 +1,6 @@
 # Native+ tone mappers (0.9.39.1)
 
-Native+ has two tone mappers: **Vanilla+** (the default) and **PsychoV**, with its two sliders. This
+Native+ has two tone mappers: **Vanilla+** (the default) and **PsychoV**, with its Vanilla+ Blend. This
 page says how each is built, why, what was measured (on a model with RenoDX's own code, and in the game), and what
 was tried and not kept. The code is the one the workflow builds: Lantern 0.9.39 beta 30 (`4ab0b71`) with
 `ports/lantern/nativeplus-engine.patch`; the references are RenoDX `b6b32f4` (`test30.hlsl`,
@@ -59,9 +59,11 @@ brightness **[to measure]**.
 ## PsychoV
 
 RenoDX's **PsychoV-30** (`psychotm_test30`, ported to GLSL and checked against RenoDX's HLSL
-below), `hdr_tonemapper=4`, built in four steps, each from a difference seen in the game. Two
-sliders take it towards Vanilla+: **Vanilla+ Highlights** (step 1, `hdr_vplus_highlights`) and
-**Hue Correction** (step 4, `hdr_hue_correction`), both 0 to 100 %, 0 by default. Both at 100 %
+below), `hdr_tonemapper=4`, built in four steps, each from a difference seen in the game, and a
+fifth for its blacks. Three sliders take it towards Vanilla+: **Vanilla+ Highlights** (step 1,
+`hdr_vplus_highlights`), **Hue Correction** (step 4, `hdr_hue_correction`) and **Vanilla+
+Shadows** (step 5, `hdr_vplus_shadows`), all 0 to 100 %, 0 by default; in the measurements below,
+"both sliders" are Vanilla+ Highlights and Hue Correction, Vanilla+ Shadows at 0. Those two at 100 %
 is 0.9.38.2's PsychoV (`hdr_tonemapper=7`, read so): Vanilla+'s curve above mid grey, an idea
 taken from the FromSoftware Engine RenoDX mod's structure (a game curve continued above mid
 grey, then a PsychoV as the display mapping), not its operator.
@@ -97,6 +99,14 @@ grey, then a PsychoV as the display mapping), not its operator.
    hue in the body, 100 % Vanilla+'s more orange one. The reference is Vanilla+'s *final* color:
    its color before the roll-off made the brightest flames redder than Vanilla+ itself (46 degrees
    at x = 2 against 76) and the red channel passed the peak **[deduction]**.
+5. **Shadows** towards the same reference, by Vanilla+ Shadows: below mid grey (fading out between
+   0.09 and 0.18 of luminance), the output's luminance moves, in the log, towards Vanilla+'s for
+   the same pixel, the color's ratios kept (PsychoV's hue and chroma). PsychoV continues the game's
+   slope at mid grey down, so its blacks are deeper or lighter than the game's depending on the
+   curve of the place. It works on the output: PsychoV-30's own toe darkens what it is given, so
+   moving its input towards Vanilla+'s only went about 40 % of the way **[measured]**. With **Keep
+   Deeper Blacks** (`hdr_vplus_shadows_deeper`) it only takes the shadows down: where PsychoV's are
+   already deeper than the game's, they stay.
 
 Where the composite has no curve to extend (its curve 3), PsychoV falls back to PsychoV-30 on the
 scene.
@@ -230,14 +240,15 @@ None was taken as better for reaching the peak more often.
 
 - Engine build, settings tests (`hdr_tonemapper` 4 kept, 7 read as 4 with both sliders at 100 %,
   0, 2, 3 and 6 read as Vanilla+; `hdr_vplus_highlights` and `hdr_hue_correction` 0 by default,
-  kept per preset, clamped to 0..100, a Hue Correction below 0 ignored), the host shader
+  kept per preset, clamped to 0..100, a Hue Correction below 0 ignored; `hdr_vplus_shadows` and
+  `hdr_vplus_shadows_deeper` 0 and off by default, kept per preset), the host shader
   configurations compiled and validated (`shader_check.py`).
 - `engine/docs/hdr-tools/psychov_check/run.sh`: the GLSL PsychoV-30 against RenoDX's HLSL compiled
   unchanged, on 791 colors (grey ramp 1e-4..1e4, 18 hues at 40 levels, out-of-gamut, extremes):
   max difference 2e-4 of the color's largest channel over 9 configurations; no NaN or infinite
   value; the grey ramp monotonic and continuous. Then `psychov_model.cpp`: the tables above.
 - HDR captures in the game, Vanilla+ against PsychoV (both sliders at 100 %) at each step (above).
-- The game's color table, read back from the GPU by the log line (0.9.38.3): a 16x16x16
+- The game's color table, read back from the GPU (0.9.38.3's log line, since removed): a 16x16x16
   `R32G32B32A32Sfloat` table that grades the image a little, mean change 4.6/255 against a neutral
   table, largest 18/255, slightly warm (white 255, 251, 243; mid grey 137, 138, 134 for 136)
   **[measured]**. The game stops drawing its grading pass at times (loading screens, menus, some
@@ -254,13 +265,11 @@ the tone mapper; no upscaler first, then the one you use.
 1. Places: a lantern in a dark street (Central Yharnam), a fire, the moon (Hunter's Dream /
    Cathedral Ward), the sun at the Grand Cathedral, a dark interior.
 2. For Vanilla+ and PsychoV (its sliders at 0 then 100 %), Bloom 50 then 0:
-   - an HDR screenshot (Xbox Game Bar, Win+Alt+PrtScn: a JXR) for nits; read the luminance and the
-     largest channel separately (they differ for colors: a red at 1000 nits in its red channel is
-     about 260 nits of luminance), and the hue in OKLab;
-   - Test probe 1 (the composite's HDR part), 2 (the final image above white), 6 (colors outside
-     BT.709): a normal screenshot each.
+   an HDR screenshot (Xbox Game Bar, Win+Alt+PrtScn: a JXR) for nits; read the luminance and the
+   largest channel separately (they differ for colors: a red at 1000 nits in its red channel is
+   about 260 nits of luminance), and the hue in OKLab.
 3. One frame with RenderDoc (Vulkan) per tone mapper: the composite draw (`bb_composite_hdr`: its
    scene input `x` and bloom input `g` texels on the lantern, its RGBA16F target), the color table
    draw (input / output), the final pass (PQ output). Note the composite's constants 832, 833
    (curve) and 840..851 (matrix) for that place.
-4. Log the HDR chain once (Debug) in each place, and send `logs/last_session.log`.
+4. Send `logs/last_session.log`.
