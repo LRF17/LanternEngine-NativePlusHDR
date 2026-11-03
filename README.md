@@ -150,8 +150,9 @@ Preset **Off** shows the game's own SDR look in HDR10, as a reference.
 - With **FSR 3.1** frame generation, the HUD of the generated frames is shown at Game Brightness:
   keep **UI Brightness** at the same value as **Game Brightness** (both 203 nits by default), or
   the HUD flickers.
-- Native+ uses Lantern's native shader compiler, its shader catalog and the same shader cache as
-  the other modes: switching the HDR source does not rebuild the shaders.
+- Native+ uses Lantern's shader compiler (its lifter, on by default since Lantern 0.9.39), its
+  shader catalog and the same shader cache as the other modes: switching the HDR source does not
+  rebuild the shaders.
 
 ## Troubleshooting and known issues
 
@@ -166,6 +167,12 @@ Preset **Off** shows the game's own SDR look in HDR10, as a reference.
 - **Known: the HUD over very bright areas** (the sun, a lamp) is brighter than UI Brightness. The
   HUD is told apart from the scene by comparing it with a copy taken just before it, and over
   highlights the two blend. RenoDX's mods show the same.
+- **The game crashes at startup with a ReShade add-on**: ReLimiter crashes Lantern 0.9.39 at
+  startup, and Display Commander (its successor) while Vulkan starts with DLSS frame generation,
+  in HDR or not. ReShade alone works. Rename the add-on (`.addon64` to `.addon64.off`, in
+  `engine\out`) and cap the frame rate with Lantern's own limit (or frame generation's cap).
+- **ReShade presets made for SDR** (most of those shared with mods) work on the 8-bit image they
+  were made for; on Native+'s HDR image their colors and highlights come out wrong.
 - **Known: a thin light line** on the right and bottom edges, on AMD with FSR 4. It goes away
   with **Sub-pixel jitter** off (in-game menu, Upscaling), at the cost of some upscaling detail.
   It is being looked into.
@@ -205,14 +212,14 @@ Preset **Off** shows the game's own SDR look in HDR10, as a reference.
 
 ## Build from source
 
-This fork carries reproducible patches over Lantern 0.9.39 beta 26: `ports/lantern/nativeplus-engine.patch`
+This fork carries reproducible patches over Lantern 0.9.39 beta 30: `ports/lantern/nativeplus-engine.patch`
 on Lantern's `engine/` and `nativeplus-launcher.patch` on its launcher (this fork's `launcher/`
 already holds it). The GitHub workflow (`.github/workflows/lantern-nativeplus.yml`) copies the
 pinned Lantern's `engine/`, applies the patches, builds the engine, its settings tests and the
 launcher, checks the HDR shaders (against RenoDX's own code for the gamut bridge) and assembles
-the package with the official 0.9.39 beta 26 runtime files (DLLs, models, shader catalogs). Pinned inputs:
+the package with the official 0.9.39 beta 30 runtime files (DLLs, models, shader catalogs). Pinned inputs:
 
-- LanternEngine `0920acbbc5ffcb2018236ece0eba1f8f49bde5ff` (0.9.39 beta 26).
+- LanternEngine `4ab0b715969059700bad6454b0a9df127c78ba27` (0.9.39 beta 30).
 - RenoDX `b6b32f47789ff9d0e640a0e0db6c9421b5397f34` (shader checks, and the source of the GLSL
   PsychoV-30).
 
@@ -225,10 +232,15 @@ game shader can be compiled: inputs read per vertex (fragment-shader barycentric
 recompiler's exact interpolation on NVIDIA) or as the GPU interpolates them (hardware
 interpolation, AMD, Intel), and for the composite the constant buffer as a storage buffer (legacy
 compiler) or a uniform buffer (native compiler). The engine picks one per game shader and says
-which in the log. The shader cache holds the game's own shaders; Native+ swaps its replacements in
-when they load, so all modes, Lantern's shader catalog and its cache recompiles
-(`bb-shader-lab.exe`) share it. With `BB_UBO_DWORDS=0` or `BB_UBO_EXACT=1`, Native+ keeps the
-legacy compiler.
+which in the log. Each replacement takes the game shader's layout (its bindings, which inputs are
+read per vertex, its render target) from what the shader was compiled from, as Lantern's own
+effects do, not from names in its SPIR-V: Lantern's lifter writes none. That layout is what a
+shader cache record keeps, so a second start, from the cache, finds the same. The shader cache
+holds the game's own shaders; Native+ swaps its replacements in when they load, so all modes,
+Lantern's shader catalog and its cache recompiles (`bb-shader-lab.exe`) share it. With
+`BB_UBO_DWORDS=0` or `BB_UBO_EXACT=1`, Native+ keeps the legacy compiler. In the log, "left in
+SDR: no constant buffer", "has another interface" or "its names and its layout differ" mean a
+game shader Native+ could not match.
 
 ## Credits and licenses
 

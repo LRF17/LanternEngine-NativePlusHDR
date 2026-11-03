@@ -1,8 +1,8 @@
-# Native+ tone mappers (0.9.38.3)
+# Native+ tone mappers (0.9.39.1)
 
 Native+ has two tone mappers: **Vanilla+** (the default) and **PsychoV**, with its two sliders. This
 page says how each is built, why, what was measured (on a model with RenoDX's own code, and in the game), and what
-was tried and not kept. The code is the one the workflow builds: Lantern 0.9.39 beta 26 (`0920acb`) with
+was tried and not kept. The code is the one the workflow builds: Lantern 0.9.39 beta 30 (`4ab0b71`) with
 `ports/lantern/nativeplus-engine.patch`; the references are RenoDX `b6b32f4` (`test30.hlsl`,
 `test17.hlsl`, `DICE.hlsl`, `color/correct.hlsl`, the Cyberpunk 2077, Order of the Sinking Star,
 Starfield and FromSoftware Engine mods, `.agents/skills/handle-sdr-tonemap-lut`) and souperman9's
@@ -149,11 +149,21 @@ Game Bar JXR, 30/10/2026; peak 1037 nits, the same settings at 50 in both preset
 - **Sun at sunset**: 1017 nits against 915. Vanilla+ rolls off each channel: an orange sun's
   blue stays low and its luminance tops out under the peak; PsychoV compresses the luminance itself
   to the peak.
-- **Deep shadows** depend on the place. PsychoV continues the game's slope at mid grey downwards;
-  the game's own curve is a straight line at the bottom (slope 1). Where the slope at mid grey is
-  above 1 the blacks are deeper than Vanilla+'s (Yharnam at night: 25th percentile 2.0 against
-  2.8 nits); where it is below 1, lighter (a dark interior: median 0.017 against 0.012 nit)
-  **[deduction for the cause; the curve's parameters per place are not logged]**.
+- **Deep shadows** depend on the place. PsychoV continues the game's slope at mid grey downwards
+  (its own log-log slope is about 1.04 times that in the blacks); the game's own curve is a
+  straight line at the bottom (slope 1). Where the slope at mid grey is above 1 the blacks are
+  deeper than Vanilla+'s (Yharnam at night: 25th percentile 2.0 against 2.8 nits); where it is
+  below 1, lighter (a dark interior: median 0.017 against 0.012 nit) **[measured]**. The game
+  changes its curve by place and by progress; a test build's curve log found two so far
+  (`y = 1 - exp(-k x)`, `f = y (c (y - 1) + 1)^2`) **[measured]**:
+
+  | Curve | Places | Mid grey at scene | Slope there | PsychoV's blacks |
+  |---|---|---:|---:|---|
+  | k 1, c 0 | Byrgenwerth; Yharnam after Father Gascoigne | 0.1985 | 0.904 | lighter than the game's |
+  | k 2.222, c 0.428 | Hunter's Dream, Forbidden Woods; Yharnam before Gascoigne | 0.1917 | 1.133 | deeper |
+
+  This is PsychoV-30 anchored as RenoDX's skill says (output mid grey and the cone there), which
+  does not force PsychoV to the game's own crush in the shadows **[RenoDX]**.
 - **Fires and lanterns**: the hue is Vanilla+'s (above); the chroma stays PsychoV-30's, about 18 %
   lower around 100 to 400 nits (fire 0.139 against 0.168). That is PsychoV-30's purity near the
   peak; the Saturation slider raises it.
@@ -233,7 +243,8 @@ None was taken as better for reaching the peak more often.
   **[measured]**. The game stops drawing its grading pass at times (loading screens, menus, some
   places); Color Grade Strength then has nothing to change.
 
-**Not run:** RenderDoc captures of each stage; the curve's parameters (832, 833) per place.
+**Not run:** RenderDoc captures of each stage; the curve's parameters (832, 833) of every place
+(those of the table above only).
 
 ## Capture procedure
 

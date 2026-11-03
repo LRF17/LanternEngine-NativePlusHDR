@@ -1,5 +1,5 @@
 diff --git a/launcher/windows/BloodborneLauncher/Core/Choices.cs b/launcher/windows/BloodborneLauncher/Core/Choices.cs
-index 7eaba04..2eb3ae5 100644
+index fade0d6..297ff55 100644
 --- a/launcher/windows/BloodborneLauncher/Core/Choices.cs
 +++ b/launcher/windows/BloodborneLauncher/Core/Choices.cs
 @@ -1,4 +1,4 @@
@@ -8,7 +8,7 @@ index 7eaba04..2eb3ae5 100644
  {
      /// <summary>A drop-down entry. Note is shown under the row while this entry is selected.</summary>
      public sealed record Choice(string Label, string Value, string? Note = null);
-@@ -246,7 +246,7 @@
+@@ -249,7 +249,7 @@
  
          public static readonly Choice[] HdrPaperWhite =
          {
@@ -17,7 +17,7 @@ index 7eaba04..2eb3ae5 100644
              new(L.T("250 nits"), "250"), new(L.T("300 nits"), "300"), new(L.T("400 nits"), "400"),
          };
  
-@@ -275,19 +275,28 @@
+@@ -278,19 +278,28 @@
  
          public static readonly Choice[] HdrMode =
          {
@@ -307,7 +307,7 @@ index 9221006..f5ec50c 100644
          public static readonly string ConfigFile = Path.Combine(ConfigDir, "settings.json");
  
 diff --git a/launcher/windows/BloodborneLauncher/Core/Updater.cs b/launcher/windows/BloodborneLauncher/Core/Updater.cs
-index 1205bc8..09e6e45 100644
+index ac7b1bd..09e6e45 100644
 --- a/launcher/windows/BloodborneLauncher/Core/Updater.cs
 +++ b/launcher/windows/BloodborneLauncher/Core/Updater.cs
 @@ -1,4 +1,4 @@
@@ -325,7 +325,7 @@ index 1205bc8..09e6e45 100644
          public static string ReleasesPage => $"https://github.com/{Repository}/releases";
  
 -        /// <summary>The engine build this launcher is made for (package.json "engine").</summary>
--        public const string EngineId = "lantern-room15-b26";
+-        public const string EngineId = "lantern-room16-b30";
 +        /// <summary>The engine build this launcher is made for (package.json "engine"). A release whose
 +        /// engine changed needs a new one: with the same, the updater replaces the launcher alone.</summary>
 +        public const string EngineId = "lantern-fps95-nativeplus-v5";
@@ -528,7 +528,7 @@ index fd86212..9da3f43 100644
              Group(L.T("Language"));
              ComboRow(SymbolRegular.LocalLanguage24, L.T("In-game menu language"), L.T("The port's settings menu (Insert or L3 + R3)"),
 diff --git a/launcher/windows/BloodborneLauncher/Views/GraphicsPage.cs b/launcher/windows/BloodborneLauncher/Views/GraphicsPage.cs
-index 0830ddb..ddad150 100644
+index 637cbdd..1bc31c0 100644
 --- a/launcher/windows/BloodborneLauncher/Views/GraphicsPage.cs
 +++ b/launcher/windows/BloodborneLauncher/Views/GraphicsPage.cs
 @@ -1,4 +1,4 @@

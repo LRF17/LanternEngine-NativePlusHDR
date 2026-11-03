@@ -16,6 +16,7 @@
 #include "video_core/renderer_vulkan/vk_bind_helper.h"
 #include "video_core/renderer_vulkan/vk_camera_motion.h"
 #include "video_core/renderer_vulkan/vk_contact_shadow.h"
+#include "video_core/renderer_vulkan/vk_rt_shadow.h"
 #include "video_core/renderer_vulkan/vk_point_shadow.h"
 #include "video_core/renderer_vulkan/vk_ssgi.h"
 #include "video_core/renderer_vulkan/vk_ssr_temporal.h"
@@ -390,6 +391,8 @@ private:
     void UpdateViewportScissorState() const;
     vk::Rect2D DrawScissor(u32 viewport) const;
     void EffectsOnFrameEnd();
+    void EffectsCaptureDraw(const AmdGpu::Regs& regs, const GraphicsPipeline* pipeline, bool is_indexed,
+                            u32 index_offset);
     void EffectsBeforeTargets(const GraphicsPipeline* pipeline);
     void EffectsAfterTargets(const GraphicsPipeline* pipeline);
     void EffectsBlendedScene();
@@ -468,8 +471,9 @@ private:
                                std::span<const u64> pass2);
     bool BindResources(const Pipeline* pipeline);
     void ForceAnisotropy(AmdGpu::Sampler& sharp, bool is_depth) const;
+    float SmoothUiSampler(AmdGpu::Sampler& sharp, bool is_depth, bool ui_replaced) const;
     void BindSamplers(const Shader::Info& stage, const PreparedStage* prepared,
-                      Shader::Backend::Bindings& binding, u32& write_index);
+                      Shader::Backend::Bindings& binding, u32& write_index, bool ui_replaced);
     /// bbport: whether stage reads reduced scene proxies through their native images instead:
     /// it has a point-filtered sampler and its pass is at the native size (BindTextures).
     bool PointReadsNative(const Shader::Info& stage, const PreparedStage* prepared) const;
@@ -581,6 +585,7 @@ private:
     std::unique_ptr<SceneTargets> scene_targets;
     std::unique_ptr<ScreenSpaceGI> ssgi;
     std::unique_ptr<SsrTemporal> ssr_temporal;
+    std::unique_ptr<RtShadow> rt_shadow;
     std::unique_ptr<ContactShadow> contact_shadow;
     std::unique_ptr<PointShadow> point_shadow;
     std::unique_ptr<VolumetricLight> volumetric_light;
@@ -593,6 +598,7 @@ private:
     VideoCore::ImageId previous_scene_depth{};
     std::unique_ptr<ObjectMotion> object_motion;
     bool motion_draw = false;
+    bool capture_draw = false;
     u64 motion_geometry{};    ///< vertex-stream identity of the current direct draw
     bool gbuffer_draw = false;
     std::unique_ptr<HdrNative> hdr_native; // bbport: native HDR output (docs/hdr.md); before
@@ -855,6 +861,8 @@ private:
     u64 proxy_samples = 0; ///< texture bindings that read a scene proxy (statistics)
     float sampler_lod_bias = 0.0f; ///< bbport: extra bias of this draw's samplers
     bool pipeline_is_compute = false; ///< bbport: the bound pipeline of BindResources
+    bool ui_movie_draw = false; ///< a Scaleform draw, or one of the UI pass (SmoothUiSampler)
+    bool ui_additive = false;   ///< ui_movie_draw blends additively (SmoothUiSampler)
     bool scene_debug_frame = false; ///< BB_SCENE_DEBUG: this frame's passes are printed
     u32 preupload_frame = ~0u; ///< bbport: frame of the last background pre-upload
     bool PendingWriteOverlaps(VAddr address, u64 size);

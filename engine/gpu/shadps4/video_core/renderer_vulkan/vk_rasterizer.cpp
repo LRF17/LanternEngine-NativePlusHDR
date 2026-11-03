@@ -82,14 +82,16 @@ Rasterizer::Rasterizer(const Instance& instance_, Scheduler& scheduler_, Runtime
     camera_motion->SetObjectMotion(object_motion.get());
     // bbport: native HDR output's passes run at points of the frame the upscaler finds.
     hdr_native = std::make_unique<HdrNative>(instance, scheduler, texture_cache, runtime);
+    rt_shadow = std::make_unique<RtShadow>(instance, scheduler, *camera_motion, *object_motion);
+    pipeline_cache.SetPositionCapture(rt_shadow->Capturing());
     ssgi = std::make_unique<ScreenSpaceGI>(instance, scheduler, texture_cache, runtime,
-                                           *scene_targets, *camera_motion);
+                                           *scene_targets, *camera_motion, *rt_shadow);
     ssr_temporal = std::make_unique<SsrTemporal>(instance, scheduler, texture_cache, runtime,
                                                  *scene_targets, *camera_motion);
     contact_shadow = std::make_unique<ContactShadow>(instance, scheduler, texture_cache, runtime,
-                                                     *scene_targets, *camera_motion);
+                                                     *scene_targets, *camera_motion, *rt_shadow);
     point_shadow = std::make_unique<PointShadow>(instance, scheduler, texture_cache, runtime,
-                                                 *scene_targets, *camera_motion);
+                                                 *scene_targets, *camera_motion, *rt_shadow);
     volumetric_light = std::make_unique<VolumetricLight>(instance, scheduler, texture_cache,
                                                          runtime, *scene_targets);
     upscaler = std::make_unique<TemporalUpscaler>(instance, scheduler, texture_cache, runtime,
@@ -2013,7 +2015,8 @@ void Rasterizer::DrawRecord(const GraphicsPipeline* pipeline, const PreparedDraw
         scene_targets->debug = scene_debug_frame;
     }
     bind_prepared = used_prepared;
-    motion_draw = pipeline->GetGraphicsKey().motion_vectors;
+    motion_draw = (pipeline->GetGraphicsKey().motion_vectors & Shader::MotionVectors::VertexOutputs) != 0;
+    capture_draw = (pipeline->GetGraphicsKey().motion_vectors & Shader::MotionVectors::VertexCapture) != 0;
     motion_geometry = 0;
 
     PrepareRenderState(pipeline);
@@ -2145,6 +2148,9 @@ void Rasterizer::DrawRecord(const GraphicsPipeline* pipeline, const PreparedDraw
             });
         }
     }
+    if (capture_draw) {
+        EffectsCaptureDraw(regs, pipeline, is_indexed, index_offset);
+    }
     if (effects_wanted) {
         const auto [effect_first_vertex, effect_first_instance] =
             GetDrawOffsets(regs, pipeline->GetStage(Shader::SwStage::Vertex), pipeline->GetFetchShader());
@@ -2152,7 +2158,9 @@ void Rasterizer::DrawRecord(const GraphicsPipeline* pipeline, const PreparedDraw
     }
     pipeline->BindResources(set_writes, push_data, {image_infos.data(), image_infos.size()},
                             {buffer_infos.data(), buffer_infos.size()});
-    if (pipeline->GetGraphicsKey().motion_vectors) {
+    if (capture_draw) {
+        rt_shadow->BindAddresses(pipeline->GetLayout(), pipeline->GetGraphicsKey().motion_vectors);
+    } else if (motion_draw) {
         object_motion->BindAddresses(pipeline->GetLayout());
     }
     // bbport: jitter geometry drawn with the scene depth, not full-screen passes (a shifted
@@ -2288,6 +2296,7 @@ void Rasterizer::DrawIndirectRecord(const GraphicsPipeline* pipeline, bool is_in
 
     // Indirect arguments may be GPU-written: leave these draws on camera fallback.
     motion_draw = false;
+    capture_draw = false;
     motion_geometry = 0;
     PrepareRenderState(pipeline);
     NotifyUiDraw(pipeline);
@@ -2340,9 +2349,14 @@ void Rasterizer::DrawIndirectRecord(const GraphicsPipeline* pipeline, bool is_in
     push_data.xoffset = push_data.xoffset*target_scale[0]+target_offset[0];
     push_data.yscale *= target_scale[1];
     push_data.yoffset = push_data.yoffset*target_scale[1]+target_offset[1];
+    if (pipeline->GetGraphicsKey().motion_vectors & Shader::MotionVectors::VertexCapture) {
+        push_data.motion_param = 0;
+    }
     pipeline->BindResources(set_writes, push_data, {image_infos.data(), image_infos.size()},
                             {buffer_infos.data(), buffer_infos.size()});
-    if (pipeline->GetGraphicsKey().motion_vectors) {
+    if (pipeline->GetGraphicsKey().motion_vectors & Shader::MotionVectors::VertexCapture) {
+        rt_shadow->BindAddresses(pipeline->GetLayout(), pipeline->GetGraphicsKey().motion_vectors);
+    } else if (pipeline->GetGraphicsKey().motion_vectors) {
         object_motion->BindAddresses(pipeline->GetLayout());
     }
     draw_jitter = {};
@@ -2945,6 +2959,18 @@ bool Rasterizer::BindResources(const Pipeline* pipeline) {
     // log2(render / output)). Shadows, post-processing and UI keep the guest's bias.
     sampler_lod_bias = 0.0f;
     pipeline_is_compute = pipeline->IsCompute();
+    ui_movie_draw = !pipeline->IsCompute() &&
+                    (ui_pass.active ||
+                     UiComposition::MovieShader(static_cast<const GraphicsPipeline*>(pipeline)
+                                                    ->GetStage(Shader::SwStage::Vertex)
+                                                    .pgm_hash));
+    if (ui_movie_draw) {
+        const auto& blend = Regs().blend_control[0];
+        // Weighted by the texel's alpha, a transparent gap adds nothing.
+        ui_additive = blend.enable &&
+                      blend.color_dst_factor == AmdGpu::BlendControl::BlendFactor::One &&
+                      blend.color_src_factor != AmdGpu::BlendControl::BlendFactor::SrcAlpha;
+    }
     if (!pipeline->IsCompute() && !BbToggle::Disabled(BbToggle::SceneMipBias) &&
         std::popcount(static_cast<const GraphicsPipeline*>(pipeline)->GetGraphicsKey().mrt_mask &
                       0xff) >= 5) {
@@ -3178,7 +3204,7 @@ void Rasterizer::ResolveVertexBuffers(const GraphicsPipeline* pipeline,
         // If there are no bindings, there is nothing further to do.
         return;
     }
-    if (motion_draw && !guest_buffers.empty()) {
+    if ((motion_draw || capture_draw) && !guest_buffers.empty()) {
         // Include every stream: identical position buffers can be paired with different
         // skinning/instance data. Index topology and base offsets are matched separately.
         motion_geometry = ready ? ready->buffers_hash
@@ -3939,7 +3965,7 @@ void Rasterizer::BindTextures(const Shader::Info& stage, const PreparedStage* pr
             set_write.descriptorType = vk::DescriptorType::eSampledImage;
             set_write.pImageInfo = &image_infos[first_image_idx + i];
         }
-        BindSamplers(stage, prepared, binding, write_index);
+        BindSamplers(stage, prepared, binding, write_index, false);
         return;
     }
     BB_SECTION(TexFull);
@@ -3955,6 +3981,8 @@ void Rasterizer::BindTextures(const Shader::Info& stage, const PreparedStage* pr
     image_desc_overflow.clear();
     image_desc_storage.clear();
     ++bind_epoch;
+    bool ui_replaced = false; ///< a 4K menus replacement is bound (SmoothUiSampler)
+    bool ui_other = false;    ///< and a sampled image that isn't one
     // To emulate storing to explicit mip levels, build a descriptor array with each mip level.
     boost::container::small_vector<u32, 8> image_descriptor_array_sizes;
     // TextureSetMemo: what this call resolves, to remember when the set qualifies.
@@ -4187,10 +4215,12 @@ void Rasterizer::BindTextures(const Shader::Info& stage, const PreparedStage* pr
                     ui_view.format = ui->info.pixel_format;
                     ui_view.type = AmdGpu::ImageType::Color2D;
                     ui_view.range = {};
+                    ui_view.range.extent.levels = ui->info.resources.levels;
                     auto& view = ui->FindView(ui_view, false);
                     image.usage.texture = 1u;
                     image_infos.emplace_back(VK_NULL_HANDLE, *view.image_view, ui->backing->state.layout);
                     set_ok = false;
+                    ui_replaced = true;
                     continue;
                 }
             }
@@ -4224,6 +4254,7 @@ void Rasterizer::BindTextures(const Shader::Info& stage, const PreparedStage* pr
             }
             image.usage.storage |= is_storage;
             image.usage.texture |= !is_storage;
+            ui_other |= !is_storage;
             if (FrameCapture::Active()) {
                 FrameCapture::Sampled(image.info, is_storage);
             }
@@ -4280,7 +4311,9 @@ void Rasterizer::BindTextures(const Shader::Info& stage, const PreparedStage* pr
         binding.unified += array_size;
     }
 
-    BindSamplers(stage, prepared, binding, write_index);
+    // The samplers aren't tied to the images here: with another image bound, its sampler may be
+    // the one changed, so the replacement is then sampled as the game's own textures are.
+    BindSamplers(stage, prepared, binding, write_index, ui_replaced && !ui_other);
 }
 
 // bbport: the PS4 build samples most scene textures with little or no anisotropic filtering.
@@ -4322,6 +4355,48 @@ void Rasterizer::ForceAnisotropy(AmdGpu::Sampler& sharp, bool is_depth) const {
         sharp.xy_mag_filter.Assign(AmdGpu::Filter::AnisoLinear);
     }
     sharp.max_aniso.Assign(ratio);
+}
+
+// Scaleform samples its sheets and glyphs with point filtering and no mip filter, made for a 1080p
+// stage drawn texel for texel. With 4K menus the art it samples is four times larger and drawn at a
+// quarter of its size (and Sharp UI scales the stage to the output): point sampling skipped most of
+// its texels and the menus came out blocky. Draws of a replacement filter linearly, between mips
+// too. While 4K menus are loaded, the menu draws of the game's own textures (the HUD's sheet is
+// never replaced: key prompts are drawn into it) filter linearly as well, as Sharp UI scales them
+// up to the output, except additive ones: their sheets' transparent gaps carry colour, and
+// filtering read it past the sprite's edge (a faint box around the HUD bars' glows).
+// BB_UI_SMOOTH=0 keeps the game's.
+float Rasterizer::SmoothUiSampler(AmdGpu::Sampler& sharp, bool is_depth, bool ui_replaced) const {
+    static const bool enabled = [] {
+        const char* env = std::getenv("BB_UI_SMOOTH");
+        return !(env && env[0] == '0');
+    }();
+    // The replacements' mip bias. A menu draws them at a fraction of their size, between two
+    // levels, and the linear mip filter blends in the smaller one, which has hardly more detail
+    // than the game's own texture; biased, the sharper level dominates.
+    static const float bias = [] {
+        const char* env = std::getenv("BB_UI_LOD_BIAS");
+        return env && *env ? std::clamp(std::strtof(env, nullptr), -2.0f, 0.0f) : -0.5f;
+    }();
+    const bool own_texture = ui_movie_draw && !ui_additive && VideoCore::TextureCache::UiReplacementsLoaded();
+    if (is_depth || !enabled || !(ui_replaced || own_texture)) {
+        return 0.0f;
+    }
+    const auto smooth = [](AmdGpu::Filter filter) {
+        return filter == AmdGpu::Filter::Point       ? AmdGpu::Filter::Bilinear
+               : filter == AmdGpu::Filter::AnisoPoint ? AmdGpu::Filter::AnisoLinear
+                                                      : filter;
+    };
+    sharp.xy_min_filter.Assign(smooth(sharp.xy_min_filter));
+    sharp.xy_mag_filter.Assign(smooth(sharp.xy_mag_filter));
+    if (ui_replaced) {
+        // The game's LOD range was set for a single level; the replacement's view bounds the chain.
+        sharp.mip_filter.Assign(AmdGpu::MipFilter::Linear);
+        sharp.min_lod.Assign(0);
+        sharp.max_lod.Assign(0xfff);
+        return bias;
+    }
+    return 0.0f;
 }
 
 vk::Sampler Rasterizer::CachedSampler(const AmdGpu::Sampler& sharp, bool is_depth,
@@ -4389,15 +4464,17 @@ bool Rasterizer::PointReadsNative(const Shader::Info& stage, const PreparedStage
 }
 
 void Rasterizer::BindSamplers(const Shader::Info& stage, const PreparedStage* prepared,
-                              Shader::Backend::Bindings& binding, u32& write_index) {
+                              Shader::Backend::Bindings& binding, u32& write_index,
+                              bool ui_replaced) {
     BB_SECTION(Samplers);
     for (u32 sampler_index = 0; sampler_index < stage.samplers.size(); ++sampler_index) {
         const auto& sampler = stage.samplers[sampler_index];
         auto ssharp =
             prepared ? prepared->sampler_sharps[sampler_index] : sampler.GetSharp(stage);
         ForceAnisotropy(ssharp, sampler.is_depth);
+        const float ui_bias = SmoothUiSampler(ssharp, sampler.is_depth, ui_replaced);
         const auto vk_sampler = CachedSampler(ssharp, sampler.is_depth,
-                                              sampler.is_depth ? 0.0f : sampler_lod_bias);
+                                              sampler.is_depth ? 0.0f : sampler_lod_bias + ui_bias);
         image_infos.emplace_back(vk_sampler, VK_NULL_HANDLE, vk::ImageLayout::eGeneral);
         auto& set_write = set_writes[write_index++];
         set_write.dstSet = VK_NULL_HANDLE;
@@ -4427,7 +4504,7 @@ Rasterizer::BeginSignature Rasterizer::MakeBeginSignature(const GraphicsPipeline
     }
     sig.mrt_mask = key.mrt_mask;
     sig.num_samples = key.num_samples;
-    sig.motion = key.motion_vectors;
+    sig.motion = (key.motion_vectors & Shader::MotionVectors::VertexOutputs) != 0;
     sig.scene_started = scene_started;
     sig.raster_scaling = upscaler->RasterScaling();
     sig.upscaler_state = upscaler->RedirectState();
@@ -5102,7 +5179,7 @@ RenderState Rasterizer::BeginRenderingFull(const GraphicsPipeline* pipeline) {
         FrameCapture::BeginPass(colors.data(), state.num_color_attachments, depth);
     }
     // bbport: object motion vector attachment of G-buffer pipelines.
-    if (key.motion_vectors) {
+    if (key.motion_vectors & Shader::MotionVectors::VertexOutputs) {
         object_motion->Attach(state, state.width, state.height);
     }
     return state;
