@@ -109,8 +109,12 @@ same defaults as the in-game menu. A new installation starts on Native+ (its shi
 Native and Expanded are Lantern's own HDR modes; their
 Highlight boost is hidden with Native+.
 
-In Native+, the HDR settings above replace the Brightness, Contrast, Saturation and Bloom of the
-in-game menu's Picture section (hidden there) and of the game's PC Colour menu.
+In Native+ with HDR output on, the HDR settings above replace the Brightness, Contrast, Saturation
+and Bloom of the in-game menu's Picture section (hidden there) and of the game's PC Colour menu.
+The launcher's **Graphics › Picture** hides those four then too, with a line saying where they are;
+with HDR off, or with another HDR source, they apply as usual. In the in-game menu they are the HDR
+section's Color Grading and Effects: brightness is **Exposure**, which Settings Mode *Intermediate*
+shows, with Contrast, Saturation and Bloom beside it.
 
 ## Tone mappers
 

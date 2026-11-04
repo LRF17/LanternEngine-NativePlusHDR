@@ -83,6 +83,33 @@ index 0f5867f..51f85dd 100644
                  process.OutputDataReceived += (_, e) => { if (e.Data != null && !LiveGame.Take(e.Data)) Emit(e.Data); };
                  process.ErrorDataReceived += (_, e) => { if (e.Data != null) Emit(e.Data); };
                  process.Exited += (_, _) =>
+diff --git a/launcher/windows/BloodborneLauncher/Core/HdrGrading.cs b/launcher/windows/BloodborneLauncher/Core/HdrGrading.cs
+new file mode 100644
+index 0000000..edf7570
+--- /dev/null
++++ b/launcher/windows/BloodborneLauncher/Core/HdrGrading.cs
+@@ -0,0 +1,21 @@
++namespace BloodborneLauncher.Core
++{
++    /// <summary>
++    /// Whether the Native+ chain grades the picture, and the source's stored value as the engine
++    /// reads it. Native+ keeps the light of the game's scene in a 16-bit chain and grades it there
++    /// (Exposure, Highlights, Shadows, Contrast, Saturation, Bloom); the port's own brightness,
++    /// contrast, saturation and bloom are left as the game draws them then.
++    /// </summary>
++    public static class HdrGrading
++    {
++        /// <summary>hdr_mode as the engine reads it: "psychov30" is Native+'s name before 0.9.38.2.</summary>
++        public static string ModeValue(string stored) => stored == "psychov30" ? "nativeplus" : stored;
++
++        /// <summary>
++        /// The engine's startup_nativeplus (bbport_settings.cpp: startup_hdr and the Native+ source),
++        /// which is what hdr_grading tests in engine/graphics.cpp. HDR off, or another source, keeps
++        /// the port's Picture values in force.
++        /// </summary>
++        public static bool Active(string hdr, string hdrMode) => hdr == "1" && ModeValue(hdrMode) == "nativeplus";
++    }
++}
 diff --git a/launcher/windows/BloodborneLauncher/Core/LauncherSettings.cs b/launcher/windows/BloodborneLauncher/Core/LauncherSettings.cs
 index ab53fef..b3689d2 100644
 --- a/launcher/windows/BloodborneLauncher/Core/LauncherSettings.cs
@@ -233,6 +260,162 @@ index ac7b1bd..eec9423 100644
              return false;
          }
  
+diff --git a/launcher/windows/BloodborneLauncher/Localization/de.json b/launcher/windows/BloodborneLauncher/Localization/de.json
+index 4641d8b..a93d706 100644
+--- a/launcher/windows/BloodborneLauncher/Localization/de.json
++++ b/launcher/windows/BloodborneLauncher/Localization/de.json
+@@ -756,6 +756,7 @@
+   "Contrast": "Kontrast",
+   "Hue": "Farbton",
+   "Fog": "Nebel",
++  "Native+ with HDR on: brightness, contrast, saturation and bloom are graded in the in-game menu (Insert or L3 + R3), live": "Native+ mit HDR: Helligkeit, Kontrast, Sättigung und Bloom werden im Spielmenü (Insert oder L3 + R3) live eingestellt",
+   "Camera": "Kamera",
+   "Camera tuning": "Kameraanpassung",
+   "Turns the three settings below on": "Schaltet die drei Einstellungen unten ein",
+diff --git a/launcher/windows/BloodborneLauncher/Localization/es.json b/launcher/windows/BloodborneLauncher/Localization/es.json
+index dd0495c..d38c250 100644
+--- a/launcher/windows/BloodborneLauncher/Localization/es.json
++++ b/launcher/windows/BloodborneLauncher/Localization/es.json
+@@ -756,6 +756,7 @@
+   "Contrast": "Contraste",
+   "Hue": "Tono",
+   "Fog": "Niebla",
++  "Native+ with HDR on: brightness, contrast, saturation and bloom are graded in the in-game menu (Insert or L3 + R3), live": "Native+ con HDR: brillo, contraste, saturación y resplandor (bloom) se ajustan en el menú del juego (Insert o L3 + R3), en directo",
+   "Camera": "Cámara",
+   "Camera tuning": "Ajuste de cámara",
+   "Turns the three settings below on": "Activa los tres ajustes de abajo",
+diff --git a/launcher/windows/BloodborneLauncher/Localization/fr.json b/launcher/windows/BloodborneLauncher/Localization/fr.json
+index f680417..bb72307 100644
+--- a/launcher/windows/BloodborneLauncher/Localization/fr.json
++++ b/launcher/windows/BloodborneLauncher/Localization/fr.json
+@@ -756,6 +756,7 @@
+   "Contrast": "Contraste",
+   "Hue": "Teinte",
+   "Fog": "Brouillard",
++  "Native+ with HDR on: brightness, contrast, saturation and bloom are graded in the in-game menu (Insert or L3 + R3), live": "Native+ avec HDR : luminosité, contraste, saturation et bloom se règlent dans le menu du jeu (Insert ou L3 + R3), en direct",
+   "Camera": "Caméra",
+   "Camera tuning": "Réglage de la caméra",
+   "Turns the three settings below on": "Active les trois réglages ci-dessous",
+diff --git a/launcher/windows/BloodborneLauncher/Localization/it.json b/launcher/windows/BloodborneLauncher/Localization/it.json
+index d24d4a4..6f454dc 100644
+--- a/launcher/windows/BloodborneLauncher/Localization/it.json
++++ b/launcher/windows/BloodborneLauncher/Localization/it.json
+@@ -756,6 +756,7 @@
+   "Contrast": "Contrasto",
+   "Hue": "Tonalità",
+   "Fog": "Nebbia",
++  "Native+ with HDR on: brightness, contrast, saturation and bloom are graded in the in-game menu (Insert or L3 + R3), live": "Native+ con HDR: luminosità, contrasto, saturazione e bloom si regolano nel menu del gioco (Insert o L3 + R3), dal vivo",
+   "Camera": "Telecamera",
+   "Camera tuning": "Regolazione della telecamera",
+   "Turns the three settings below on": "Attiva le tre impostazioni qui sotto",
+diff --git a/launcher/windows/BloodborneLauncher/Localization/ja.json b/launcher/windows/BloodborneLauncher/Localization/ja.json
+index 3de2a9c..e1f8d81 100644
+--- a/launcher/windows/BloodborneLauncher/Localization/ja.json
++++ b/launcher/windows/BloodborneLauncher/Localization/ja.json
+@@ -756,6 +756,7 @@
+   "Contrast": "コントラスト",
+   "Hue": "色相",
+   "Fog": "フォグ",
++  "Native+ with HDR on: brightness, contrast, saturation and bloom are graded in the in-game menu (Insert or L3 + R3), live": "Native+（HDR 有効）では明るさ、コントラスト、彩度、ブルームをゲーム内メニュー（Insert または L3 + R3）でリアルタイムに調整します",
+   "Camera": "カメラ",
+   "Camera tuning": "カメラの調整",
+   "Turns the three settings below on": "以下の 3 つの設定を有効にします",
+diff --git a/launcher/windows/BloodborneLauncher/Localization/ko.json b/launcher/windows/BloodborneLauncher/Localization/ko.json
+index 1b488ce..6d81a67 100644
+--- a/launcher/windows/BloodborneLauncher/Localization/ko.json
++++ b/launcher/windows/BloodborneLauncher/Localization/ko.json
+@@ -756,6 +756,7 @@
+   "Contrast": "대비",
+   "Hue": "색조",
+   "Fog": "안개",
++  "Native+ with HDR on: brightness, contrast, saturation and bloom are graded in the in-game menu (Insert or L3 + R3), live": "Native+ 및 HDR 사용 시 밝기, 대비, 채도, 블룸을 게임 내 메뉴(Insert 또는 L3 + R3)에서 실시간으로 조정합니다",
+   "Camera": "카메라",
+   "Camera tuning": "카메라 조정",
+   "Turns the three settings below on": "아래 세 가지 설정을 켭니다",
+diff --git a/launcher/windows/BloodborneLauncher/Localization/pl.json b/launcher/windows/BloodborneLauncher/Localization/pl.json
+index af68742..0c29e66 100644
+--- a/launcher/windows/BloodborneLauncher/Localization/pl.json
++++ b/launcher/windows/BloodborneLauncher/Localization/pl.json
+@@ -756,6 +756,7 @@
+   "Contrast": "Kontrast",
+   "Hue": "Odcień",
+   "Fog": "Mgła",
++  "Native+ with HDR on: brightness, contrast, saturation and bloom are graded in the in-game menu (Insert or L3 + R3), live": "Native+ z HDR: jasność, kontrast, nasycenie i bloom ustawia się w menu gry (Insert lub L3 + R3), na żywo",
+   "Camera": "Kamera",
+   "Camera tuning": "Strojenie kamery",
+   "Turns the three settings below on": "Włącza trzy poniższe ustawienia",
+diff --git a/launcher/windows/BloodborneLauncher/Localization/pt-BR.json b/launcher/windows/BloodborneLauncher/Localization/pt-BR.json
+index c4f9574..12b89c4 100644
+--- a/launcher/windows/BloodborneLauncher/Localization/pt-BR.json
++++ b/launcher/windows/BloodborneLauncher/Localization/pt-BR.json
+@@ -756,6 +756,7 @@
+   "Contrast": "Contraste",
+   "Hue": "Matiz",
+   "Fog": "Neblina",
++  "Native+ with HDR on: brightness, contrast, saturation and bloom are graded in the in-game menu (Insert or L3 + R3), live": "Native+ com HDR: brilho, contraste, saturação e bloom são ajustados no menu do jogo (Insert ou L3 + R3), ao vivo",
+   "Camera": "Câmera",
+   "Camera tuning": "Ajuste de câmera",
+   "Turns the three settings below on": "Ativa as três configurações abaixo",
+diff --git a/launcher/windows/BloodborneLauncher/Localization/ru.json b/launcher/windows/BloodborneLauncher/Localization/ru.json
+index 172e4b6..eeb29ba 100644
+--- a/launcher/windows/BloodborneLauncher/Localization/ru.json
++++ b/launcher/windows/BloodborneLauncher/Localization/ru.json
+@@ -756,6 +756,7 @@
+   "Contrast": "Контрастность",
+   "Hue": "Оттенок",
+   "Fog": "Туман",
++  "Native+ with HDR on: brightness, contrast, saturation and bloom are graded in the in-game menu (Insert or L3 + R3), live": "Native+ с HDR: яркость, контрастность, насыщенность и свечение (bloom) задаются в меню игры (Insert или L3 + R3), в реальном времени",
+   "Camera": "Камера",
+   "Camera tuning": "Настройка камеры",
+   "Turns the three settings below on": "Включает три настройки ниже",
+diff --git a/launcher/windows/BloodborneLauncher/Localization/tr.json b/launcher/windows/BloodborneLauncher/Localization/tr.json
+index 73ae9f0..f981e91 100644
+--- a/launcher/windows/BloodborneLauncher/Localization/tr.json
++++ b/launcher/windows/BloodborneLauncher/Localization/tr.json
+@@ -756,6 +756,7 @@
+   "Contrast": "Kontrast",
+   "Hue": "Ton",
+   "Fog": "Sis",
++  "Native+ with HDR on: brightness, contrast, saturation and bloom are graded in the in-game menu (Insert or L3 + R3), live": "Native+ ile HDR açıkken: parlaklık, kontrast, doygunluk ve bloom oyun içi menüde (Insert veya L3 + R3) canlı olarak ayarlanır",
+   "Camera": "Kamera",
+   "Camera tuning": "Kamera ayarı",
+   "Turns the three settings below on": "Aşağıdaki üç ayarı açar",
+diff --git a/launcher/windows/BloodborneLauncher/Localization/uk.json b/launcher/windows/BloodborneLauncher/Localization/uk.json
+index 7c74b45..3962277 100644
+--- a/launcher/windows/BloodborneLauncher/Localization/uk.json
++++ b/launcher/windows/BloodborneLauncher/Localization/uk.json
+@@ -756,6 +756,7 @@
+   "Contrast": "Контраст",
+   "Hue": "Відтінок",
+   "Fog": "Туман",
++  "Native+ with HDR on: brightness, contrast, saturation and bloom are graded in the in-game menu (Insert or L3 + R3), live": "Native+ з HDR: яскравість, контраст, насиченість і світіння (bloom) задаються в меню гри (Insert або L3 + R3), у реальному часі",
+   "Camera": "Камера",
+   "Camera tuning": "Налаштування камери",
+   "Turns the three settings below on": "Вмикає три налаштування нижче",
+diff --git a/launcher/windows/BloodborneLauncher/Localization/zh-CN.json b/launcher/windows/BloodborneLauncher/Localization/zh-CN.json
+index 7cda9b3..c9b8ecd 100644
+--- a/launcher/windows/BloodborneLauncher/Localization/zh-CN.json
++++ b/launcher/windows/BloodborneLauncher/Localization/zh-CN.json
+@@ -756,6 +756,7 @@
+   "Contrast": "对比度",
+   "Hue": "色相",
+   "Fog": "雾效",
++  "Native+ with HDR on: brightness, contrast, saturation and bloom are graded in the in-game menu (Insert or L3 + R3), live": "Native+ 开启 HDR 时：亮度、对比度、饱和度和泛光在游戏内菜单（Insert 或 L3 + R3）中实时调整",
+   "Camera": "镜头",
+   "Camera tuning": "镜头调校",
+   "Turns the three settings below on": "启用下方三项设置",
+diff --git a/launcher/windows/BloodborneLauncher/Localization/zh-TW.json b/launcher/windows/BloodborneLauncher/Localization/zh-TW.json
+index e06187a..be2470a 100644
+--- a/launcher/windows/BloodborneLauncher/Localization/zh-TW.json
++++ b/launcher/windows/BloodborneLauncher/Localization/zh-TW.json
+@@ -756,6 +756,7 @@
+   "Contrast": "對比",
+   "Hue": "色相",
+   "Fog": "霧氣",
++  "Native+ with HDR on: brightness, contrast, saturation and bloom are graded in the in-game menu (Insert or L3 + R3), live": "Native+ 開啟 HDR 時：亮度、對比、飽和度和光暈在遊戲內選單（Insert 或 L3 + R3）中即時調整",
+   "Camera": "鏡頭",
+   "Camera tuning": "鏡頭調整",
+   "Turns the three settings below on": "開啟下方三項設定",
 diff --git a/launcher/windows/BloodborneLauncher/MainWindow.xaml b/launcher/windows/BloodborneLauncher/MainWindow.xaml
 index 1b9249f..0d90eaa 100644
 --- a/launcher/windows/BloodborneLauncher/MainWindow.xaml
@@ -256,7 +439,7 @@ index 1b9249f..0d90eaa 100644
                  </TextBlock>
  
 diff --git a/launcher/windows/BloodborneLauncher/Views/DisplayPage.cs b/launcher/windows/BloodborneLauncher/Views/DisplayPage.cs
-index fd86212..5807b2c 100644
+index fd86212..de0bcce 100644
 --- a/launcher/windows/BloodborneLauncher/Views/DisplayPage.cs
 +++ b/launcher/windows/BloodborneLauncher/Views/DisplayPage.cs
 @@ -10,8 +10,38 @@ namespace BloodborneLauncher.Views
@@ -267,6 +450,9 @@ index fd86212..5807b2c 100644
 +        private FrameworkElement? _hdrBrightnessRow;
 +        private FrameworkElement? _hdrColourRow;
 +        private FrameworkElement? _hdrToneMapperRow;
++        /// <summary>HDR › Advanced: its "Advanced (n)" label counts the rows on show, and the HDR source
++        /// above shows some and hides others (RefreshCount).</summary>
++        private AdvancedSection? _hdrAdvanced;
  
 -        public override void OnShown() => RefreshMonitors();
 +        public override void OnShown()
@@ -275,12 +461,8 @@ index fd86212..5807b2c 100644
 +            RefreshHdrRows();
 +        }
 +
-+        /// <summary>hdr_mode, Native+'s name before 0.9.38.2 (psychov30) read as nativeplus.</summary>
-+        private string HdrMode()
-+        {
-+            var mode = Ini.Get("hdr_mode", "native");
-+            return mode == "psychov30" ? "nativeplus" : mode;
-+        }
++        /// <summary>hdr_mode as the engine reads it: psychov30, Native+'s name before 0.9.38.2, is Native+.</summary>
++        private string HdrMode() => HdrGrading.ModeValue(Ini.Get("hdr_mode", "native"));
 +
 +        private void RefreshHdrRows()
 +        {
@@ -295,6 +477,7 @@ index fd86212..5807b2c 100644
 +                _hdrColourRow.Visibility = native ? Visibility.Visible : Visibility.Collapsed;
 +            if (_hdrToneMapperRow != null)
 +                _hdrToneMapperRow.Visibility = psycho ? Visibility.Visible : Visibility.Collapsed;
++            _hdrAdvanced?.RefreshCount();
 +        }
  
          private void RefreshMonitors()
@@ -322,7 +505,7 @@ index fd86212..5807b2c 100644
              ToggleRow(SymbolRegular.Desktop24, L.T("Peak brightness from the display"),
                  L.T("The peak Windows reports for the display the game is on (the Windows HDR Calibration app's, once it has run). Off: the value below"),
                  () => Ini.Get("hdr_peak_auto", "1") != "0", v => Ini.Set("hdr_peak_auto", v ? "1" : "0"));
-@@ -186,13 +222,42 @@ namespace BloodborneLauncher.Views
+@@ -186,13 +222,43 @@ namespace BloodborneLauncher.Views
                  10, 4000, 10, () => ParseDouble(Ini.Get("hdr_peak", "1000"), 1000),
                  v => Ini.Set("hdr_peak", v.ToString("0", System.Globalization.CultureInfo.InvariantCulture)),
                  format: L.T("0' nits'"), valueWidth: 82);
@@ -360,6 +543,7 @@ index fd86212..5807b2c 100644
              var hdrMore = Advanced();
 -            ComboRow(SymbolRegular.TextFont24, L.T("UI brightness"), L.T("Native source only: how bright the HUD, menus and subtitles are, against paper white"),
 -                Choices.HdrUiBrightness, () => Ini.Get("hdr_ui_brightness", "1"), v => Ini.Set("hdr_ui_brightness", v), hdrMore);
++            _hdrAdvanced = hdrMore.Parent as AdvancedSection;
              ComboRow(SymbolRegular.Color24, L.T("UI colour"), L.T("Native source only: Vivid shows the HUD and menus with the colours a wide-gamut monitor gives SDR; Exact keeps sRGB's"),
                  Choices.HdrUiColor, () => Ini.Get("hdr_ui_color", "1"), v => Ini.Set("hdr_ui_color", v), hdrMore);
 +            _hdrColourRow = (FrameworkElement)hdrMore.Children[hdrMore.Children.Count - 1];
@@ -367,3 +551,156 @@ index fd86212..5807b2c 100644
  
              Group(L.T("Language"));
              ComboRow(SymbolRegular.LocalLanguage24, L.T("In-game menu language"), L.T("The port's settings menu (Insert or L3 + R3)"),
+diff --git a/launcher/windows/BloodborneLauncher/Views/GraphicsPage.cs b/launcher/windows/BloodborneLauncher/Views/GraphicsPage.cs
+index 637cbdd..a23f1cd 100644
+--- a/launcher/windows/BloodborneLauncher/Views/GraphicsPage.cs
++++ b/launcher/windows/BloodborneLauncher/Views/GraphicsPage.cs
+@@ -13,6 +13,11 @@ namespace BloodborneLauncher.Views
+         private TextBlock? _motionBlurHint;
+         private readonly SettingRow _presetCard, _renderScaleCard, _sharpenCard, _sharpnessCard, _mipBiasCard;
+         private readonly SettingRow _frameGenFramesCard, _frameGenDynamicCard, _reflexCard, _frameGenCapCard;
++        /// <summary>Picture's Bloom, Saturation, Brightness and Contrast: the Native+ chain grades them while
++        /// it runs (HdrGrading.Active), so the engine leaves them as the game draws them and they are hidden.</summary>
++        private readonly List<SettingRow> _pictureGradedRows = new();
++        /// <summary>The line under them saying where they are while that happens (the in-game menu).</summary>
++        private TextBlock? _pictureGradedNote;
+ 
+         public GraphicsPage() : base(L.T("Graphics"),
+             L.T("Stored in lantern.ini; the upscaler can also be changed in game (Insert or L3 + R3)."))
+@@ -89,13 +94,20 @@ namespace BloodborneLauncher.Views
+             IniToggle(SymbolRegular.CircleHalfFill24, L.T("Vignette"), null, "graphics_vignette", picture);
+             IniSlider(SymbolRegular.DarkTheme24, L.T("Ambient occlusion strength"), 0, 3, "graphics_ao_strength", picture);
+             IniSlider(SymbolRegular.WeatherSunny24, L.T("Shadow distance"), 0.5, 4, "graphics_shadow_scale", picture);
+-            IniSlider(SymbolRegular.Lightbulb24, L.T("Bloom"), 0, 3, "graphics_bloom", picture);
+-            IniSlider(SymbolRegular.Color24, L.T("Saturation"), 0, 3, "graphics_saturation", picture);
+-            IniSlider(SymbolRegular.BrightnessHigh24, L.T("Brightness"), 0, 3, "graphics_brightness", picture);
+-            IniSlider(SymbolRegular.DarkTheme24, L.T("Contrast"), 0.8, 1.2, "graphics_contrast", picture, step: 0.01);
++            // The four the Native+ chain takes over while it grades (UpdatePicture hides them then).
++            GradedSlider(SymbolRegular.Lightbulb24, L.T("Bloom"), 0, 3, "graphics_bloom", picture);
++            GradedSlider(SymbolRegular.Color24, L.T("Saturation"), 0, 3, "graphics_saturation", picture);
++            GradedSlider(SymbolRegular.BrightnessHigh24, L.T("Brightness"), 0, 3, "graphics_brightness", picture);
++            GradedSlider(SymbolRegular.DarkTheme24, L.T("Contrast"), 0.8, 1.2, "graphics_contrast", picture, step: 0.01);
+             IniSlider(SymbolRegular.Color24, L.T("Hue"), -180, 180, "graphics_hue", picture, step: 1, fallback: 0);
+             IniSlider(SymbolRegular.WeatherFog24, L.T("Fog"), 0, 3, "graphics_fog", picture);
+             Body.Children.Add(picture);
++            // Where they went, while they are hidden: the in-game menu's grading, which is live there.
++            // The menu's own labels are English and Exposure only shows from Settings Mode Intermediate,
++            // so that detail is in the README instead of here.
++            _pictureGradedNote = Text(L.T("Native+ with HDR on: brightness, contrast, saturation and bloom are graded in the in-game menu (Insert or L3 + R3), live"), "Faint");
++            Body.Children.Add(_pictureGradedNote);
++            UpdatePicture();
+ 
+             Group(L.T("Menus"));
+             _ui4k = ToggleRow(SymbolRegular.ZoomIn24, L.T("4K menus"),
+@@ -226,6 +238,15 @@ namespace BloodborneLauncher.Views
+             double step = 0.05, double fallback = 1.0) =>
+             SliderRow(icon, title, null, min, max, step, () => ParseDouble(Ini.Get(key, Fmt(fallback)), fallback), v => Ini.Set(key, Fmt(v)), into: into);
+ 
++        /// <summary>A Picture slider the Native+ chain replaces while it grades (hdr_grading): kept in
++        /// _pictureGradedRows, so UpdatePicture hides it and the note says where it is.</summary>
++        private void GradedSlider(SymbolRegular icon, string title, double min, double max, string key, Panel into,
++            double step = 0.05)
++        {
++            IniSlider(icon, title, min, max, key, into, step);
++            _pictureGradedRows.Add((SettingRow)into.Children[into.Children.Count - 1]);
++        }
++
+         /// <summary>An RTX 40 or 50 card (desktop or laptop): the GPUs NVIDIA's frame generation runs on.</summary>
+         private static bool DlssFrameGenGpu() =>
+             Hardware.Detect() is { Rtx: true } hardware &&
+@@ -243,7 +264,28 @@ namespace BloodborneLauncher.Views
+             _ => SymbolRegular.Color24,
+         };
+ 
+-        public override void OnShown() => UpdateUpscaler();
++        public override void OnShown()
++        {
++            UpdateUpscaler();
++            UpdatePicture();
++        }
++
++        /// <summary>
++        /// Picture's Bloom, Saturation, Brightness and Contrast are the game's own look only while the
++        /// Native+ chain does not grade: with HDR output on and the Native+ source the chain grades
++        /// instead (engine/graphics.cpp's hdr_grading), and the engine leaves them as drawn. Hidden
++        /// then, with the note saying where they are; HDR off, or Native and Expanded, keeps them.
++        /// </summary>
++        private void UpdatePicture()
++        {
++            var grades = HdrGrading.Active(Ini.Get("hdr"), Ini.Get("hdr_mode", "native"));
++            var shown = grades ? System.Windows.Visibility.Collapsed : System.Windows.Visibility.Visible;
++            var noteShown = grades ? System.Windows.Visibility.Visible : System.Windows.Visibility.Collapsed;
++            foreach (var row in _pictureGradedRows)
++                row.Visibility = shown;
++            if (_pictureGradedNote != null)
++                _pictureGradedNote.Visibility = noteShown;
++        }
+ 
+         private static bool DlssFound() =>
+             Paths.DlssRuntime != null; // the engine has DLSS built in; NVIDIA's runtime sits beside it
+diff --git a/launcher/windows/BloodborneLauncher/Views/LauncherPage.cs b/launcher/windows/BloodborneLauncher/Views/LauncherPage.cs
+index 89d445b..c0005db 100644
+--- a/launcher/windows/BloodborneLauncher/Views/LauncherPage.cs
++++ b/launcher/windows/BloodborneLauncher/Views/LauncherPage.cs
+@@ -325,6 +325,10 @@ namespace BloodborneLauncher.Views
+             var count = Rows.Children.OfType<SettingRow>().Count(r => r.Visibility == Visibility.Visible);
+             _label.Text = count > 0 ? $"{_title} ({count})" : _title;
+         }
++
++        /// <summary>Counts the rows again: a choice elsewhere on the page shows and hides them (the HDR
++        /// source, which leaves Native+ its tone mapper and takes Native's UI colour away).</summary>
++        public void RefreshCount() => ShowCount();
+     }
+ 
+     /// <summary>
+diff --git a/launcher/windows/tests/HdrGradingChecks/HdrGradingChecks.csproj b/launcher/windows/tests/HdrGradingChecks/HdrGradingChecks.csproj
+new file mode 100644
+index 0000000..ba598bd
+--- /dev/null
++++ b/launcher/windows/tests/HdrGradingChecks/HdrGradingChecks.csproj
+@@ -0,0 +1,12 @@
++<Project Sdk="Microsoft.NET.Sdk">
++  <PropertyGroup>
++    <OutputType>Exe</OutputType>
++    <TargetFramework>net8.0-windows</TargetFramework>
++    <ImplicitUsings>enable</ImplicitUsings>
++    <Nullable>enable</Nullable>
++    <UseWPF>true</UseWPF>
++  </PropertyGroup>
++  <ItemGroup>
++    <ProjectReference Include="../../BloodborneLauncher/BloodborneLauncher.csproj" />
++  </ItemGroup>
++</Project>
+diff --git a/launcher/windows/tests/HdrGradingChecks/Program.cs b/launcher/windows/tests/HdrGradingChecks/Program.cs
+new file mode 100644
+index 0000000..b61f548
+--- /dev/null
++++ b/launcher/windows/tests/HdrGradingChecks/Program.cs
+@@ -0,0 +1,27 @@
++using BloodborneLauncher.Core;
++
++static void Require(bool condition, string message)
++{
++    if (!condition) throw new InvalidOperationException(message);
++}
++
++// HdrGrading.Active is the engine's startup_nativeplus (bbport_settings.cpp: startup_hdr and the
++// Native+ source), which is what hdr_grading tests in engine/graphics.cpp: with HDR output on and
++// the Native+ source, the chain grades the picture and the port's own brightness, contrast,
++// saturation and bloom are left as the game draws them.
++Require(HdrGrading.Active("1", "nativeplus"), "Native+ with HDR on must grade the picture");
++Require(HdrGrading.Active("1", "psychov30"), "psychov30 is Native+'s name before 0.9.38.2");
++Require(!HdrGrading.Active("0", "nativeplus"), "HDR off keeps the port's Picture values in force");
++Require(!HdrGrading.Active("", "nativeplus"), "A missing hdr key keeps them in force");
++Require(!HdrGrading.Active("1", "native"), "Native is not graded by the Native+ chain");
++Require(!HdrGrading.Active("1", "expand"), "Expanded is not graded by the Native+ chain");
++Require(!HdrGrading.Active("1", ""), "A missing source keeps them in force");
++
++// The stored hdr_mode as the engine reads it, which the Display page shows and this decides on.
++Require(HdrGrading.ModeValue("psychov30") == "nativeplus", "psychov30 must read as nativeplus");
++Require(HdrGrading.ModeValue("nativeplus") == "nativeplus", "nativeplus must stay nativeplus");
++Require(HdrGrading.ModeValue("native") == "native", "native must stay native");
++Require(HdrGrading.ModeValue("expand") == "expand", "expand must stay expand");
++Require(HdrGrading.ModeValue("") == "", "An absent source stays absent");
++
++Console.WriteLine("HDR grading checks passed");
