@@ -154,9 +154,6 @@ Preset **Off** shows the game's own SDR look in HDR, as a reference.
   game pads its render targets' width to a multiple of 128.
 - **Frame generation**: DLSS (NVIDIA RTX 40/50) and FSR 3.1 (any GPU) work in Native+ and
   interpolate its HDR frames as they are.
-- With **FSR 3.1** frame generation, the HUD of the generated frames is shown at Game Brightness:
-  keep **UI Brightness** at the same value as **Game Brightness** (both 203 nits by default), or
-  the HUD flickers.
 - Native+ uses Lantern's shader compiler (its lifter, on by default since Lantern 0.9.39), its
   shader catalog and the same shader cache as the other modes: switching the HDR source does not
   rebuild the shaders.
