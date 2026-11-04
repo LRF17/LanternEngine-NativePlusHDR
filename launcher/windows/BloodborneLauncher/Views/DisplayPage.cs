@@ -14,6 +14,9 @@ namespace BloodborneLauncher.Views
         private FrameworkElement? _hdrBrightnessRow;
         private FrameworkElement? _hdrColourRow;
         private FrameworkElement? _hdrToneMapperRow;
+        /// <summary>HDR › Advanced: its "Advanced (n)" label counts the rows on show, and the HDR source
+        /// above shows some and hides others (RefreshCount).</summary>
+        private AdvancedSection? _hdrAdvanced;
 
         public override void OnShown()
         {
@@ -21,12 +24,8 @@ namespace BloodborneLauncher.Views
             RefreshHdrRows();
         }
 
-        /// <summary>hdr_mode, Native+'s name before 0.9.38.2 (psychov30) read as nativeplus.</summary>
-        private string HdrMode()
-        {
-            var mode = Ini.Get("hdr_mode", "native");
-            return mode == "psychov30" ? "nativeplus" : mode;
-        }
+        /// <summary>hdr_mode as the engine reads it: psychov30, Native+'s name before 0.9.38.2, is Native+.</summary>
+        private string HdrMode() => HdrGrading.ModeValue(Ini.Get("hdr_mode", "native"));
 
         private void RefreshHdrRows()
         {
@@ -41,6 +40,7 @@ namespace BloodborneLauncher.Views
                 _hdrColourRow.Visibility = native ? Visibility.Visible : Visibility.Collapsed;
             if (_hdrToneMapperRow != null)
                 _hdrToneMapperRow.Visibility = psycho ? Visibility.Visible : Visibility.Collapsed;
+            _hdrAdvanced?.RefreshCount();
         }
 
         private void RefreshMonitors()
@@ -254,6 +254,7 @@ namespace BloodborneLauncher.Views
                 Choices.HdrToneMapper, () => Choices.HdrToneMapperValue(Ini.Get("hdr_tonemapper", "5")), v => Ini.Set("hdr_tonemapper", v));
             _hdrToneMapperRow = (FrameworkElement)Body.Children[Body.Children.Count - 1];
             var hdrMore = Advanced();
+            _hdrAdvanced = hdrMore.Parent as AdvancedSection;
             ComboRow(SymbolRegular.Color24, L.T("UI colour"), L.T("Native source only: Vivid shows the HUD and menus with the colours a wide-gamut monitor gives SDR; Exact keeps sRGB's"),
                 Choices.HdrUiColor, () => Ini.Get("hdr_ui_color", "1"), v => Ini.Set("hdr_ui_color", v), hdrMore);
             _hdrColourRow = (FrameworkElement)hdrMore.Children[hdrMore.Children.Count - 1];
