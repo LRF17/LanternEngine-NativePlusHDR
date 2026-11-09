@@ -69,6 +69,9 @@ namespace BloodborneLauncher.Core
         private static EngineSwitch OnUnless0(string env, string group, string title, string hint) =>
             Toggle(env, group, title, hint, on: true);
 
+        private static EngineSwitch OffUnless1(string env, string group, string title, string hint) =>
+            Toggle(env, group, title, hint, on: false);
+
         private static EngineSwitch Number(string env, string group, string title, string hint, double value, double min, double max,
             double step, string unit = "") =>
             new(env, group, title, hint, SwitchKind.Number, value.ToString(step >= 1 ? "0" : "0.###", CultureInfo.InvariantCulture))
@@ -86,14 +89,15 @@ namespace BloodborneLauncher.Core
         private static readonly Choice[] AutoOnOff = { new(L.T("Auto"), ""), new(L.T("On"), "1"), new(L.T("Off"), "0") };
 
         public static readonly string[] NativeSwitches =
-            { "LANTERN_GX_DRAWS", "LANTERN_GX_TEXTURES", "LANTERN_GX_BUFFERS", "LANTERN_GX_RECORDS", "LANTERN_READ_FILTER", "LANTERN_LIFTER" };
+            { "LANTERN_GX_DRAWS", "LANTERN_GX_TEXTURES", "LANTERN_GX_BUFFERS", "LANTERN_GX_RECORDS", "LANTERN_GX_NATIVE", "LANTERN_READ_FILTER", "LANTERN_LIFTER" };
 
         public static readonly IReadOnlyList<EngineSwitch> All = new[]
         {
-            OnUnless0("LANTERN_GX_DRAWS", Performance, L.T("Native renderer: draws"), L.T("Lantern's own resource binds. Turn off if something draws wrong or crashes")),
-            OnUnless0("LANTERN_GX_TEXTURES", Performance, L.T("Native renderer: textures"), L.T("Images and depth targets taken from the game's own texture objects. Turn off if something draws wrong or crashes")),
-            OnUnless0("LANTERN_GX_BUFFERS", Performance, L.T("Native renderer: buffers"), L.T("The game's upload memory stays in place. Turn off if something draws wrong or crashes")),
-            OnUnless0("LANTERN_GX_RECORDS", Performance, L.T("Native renderer: pipelines"), L.T("Each draw's pipeline chosen from the game's own state. Turn off if something draws wrong or crashes")),
+            OffUnless1("LANTERN_GX_DRAWS", Performance, L.T("Native renderer: binds"), L.T("Lantern's own resource binds. Off by default while the native renderer is rebuilt: today it adds work to every draw")),
+            OffUnless1("LANTERN_GX_TEXTURES", Performance, L.T("Native renderer: textures"), L.T("Images and depth targets taken from the game's own texture objects. Off by default while the native renderer is rebuilt: today it adds work to every draw")),
+            OffUnless1("LANTERN_GX_BUFFERS", Performance, L.T("Native renderer: buffers"), L.T("The game's upload memory stays in place. Off by default while the native renderer is rebuilt: today it adds work to every draw")),
+            OffUnless1("LANTERN_GX_RECORDS", Performance, L.T("Native renderer: pipelines"), L.T("Each draw's pipeline chosen from the game's own state. Off by default while the native renderer is rebuilt: today it adds work to every draw")),
+            OffUnless1("LANTERN_GX_NATIVE", Performance, L.T("Native renderer: draws"), L.T("Bindings, render state, vertex and index buffers taken from the game's own objects instead of its command buffers. Needs Native renderer: pipelines. Off by default while the native renderer is rebuilt: today it adds work to every draw")),
             OnUnless0("LANTERN_READ_FILTER", Performance, L.T("Native renderer: read tracking"), L.T("Watches fewer memory reads. Turn off if something draws wrong or crashes")),
             OnUnless0("LANTERN_LIFTER", Performance, L.T("Native shader compiler"), L.T("Lantern's own shader compiler. Switching recompiles every shader once. Turn off if something draws wrong or crashes")),
             Pick("BB_GPU_ID", Graphics, L.T("Graphics card"),
@@ -103,9 +107,16 @@ namespace BloodborneLauncher.Core
                 L.T("Anisotropic filtering forced on the game's textures: ground and walls seen at an angle stay sharp. Lower ") +
                 L.T("values cost a little less GPU time; Game's own leaves the game's filtering as it is"), "16",
                 new("16x", "16"), new("8x", "8"), new("4x", "4"), new("2x", "2"), new(L.T("Game's own"), "0")),
+            OnUnless0("BB_VOLUMETRIC_STEADY", Graphics, L.T("Steady sunlight color"),
+                L.T("Keeps the sunlight fog's color steady: it ignores the game's default white light and fades to new colors, so it ") +
+                L.T("does not flicker as the camera moves. Off: the original color, which can flip to white and back. Needs Volumetric ") +
+                L.T("sunlight on")),
             Flag("BB_UPSCALER_NO_BLUR", Graphics, L.T("No motion blur smear with upscalers"),
                 L.T("With an upscaler at an output other than 1920x1080 the game's motion blur is left out: the upscaler would ") +
                 L.T("smear it over the whole picture. Off (default): the blur stays. The Motion blur setting is not changed")),
+            OnUnless0("BB_POINT_FOG_STEADY", Graphics, L.T("Steady lamp fog"),
+                L.T("Keeps each lamp's fog on after the game stops listing the lamp, with slow fades, so it does not flicker as the camera moves. ") +
+                L.T("Can leave fog showing through a wall. Off: the original fog, from the first 64 lights the game lists. Needs Fog around lamps on")),
 
             Pick("BB_PIPELINE_THREADS", Performance, L.T("Shader compile threads"),
                 L.T("How many threads compile new shaders in the background. More finish a new area's shaders sooner but take CPU ") +

@@ -11,6 +11,7 @@
 #include <unordered_set>
 
 #include "engine/gx_records.h"
+#include "bbport_sections.h"
 #include "common/hash.h"
 #include "common/elf_info.h"
 #include "common/io_file.h"
@@ -592,7 +593,10 @@ const GraphicsPipeline* PipelineCache::TryPreparedPipeline(const PreparedDraw& p
         auto& info = const_cast<Program*>(stage.program)->info;
         info.pgm_base = params.Base();
         info.user_data = params.user_data;
-        info.RefreshFlatBuf();
+        {
+            BbSections::ScopeA tables_scope{BbSections::ATables};
+            info.RefreshFlatBuf();
+        }
         if (info.pgm_base != stage.pgm_base || info.flattened_ud_buf.size() != stage.flat_size ||
             std::memcmp(info.flattened_ud_buf.data(), stage.flat,
                         stage.flat_size * sizeof(u32)) != 0) {
@@ -603,12 +607,12 @@ const GraphicsPipeline* PipelineCache::TryPreparedPipeline(const PreparedDraw& p
     return it != graphics_pipelines.end() ? it->second.get() : nullptr;
 }
 
-bool PipelineCache::RestoreGxPipeline(const GxPipeline& memo) {
+bool PipelineCache::RestoreGxPipeline(const GxPipeline& memo, bool from_record) {
     const auto& regs = liverpool->regs;
     if (regs.stage_enable.raw != AmdGpu::ShaderStageEnable::VgtStages::Vs) {
         return false;
     }
-    const auto restore = [&](Shader::Info* info, HwStage stage) {
+    const auto restore = [&](Shader::Info* info, HwStage stage, u32 bit) {
         if (!info) {
             return true;
         }
@@ -616,13 +620,19 @@ bool PipelineCache::RestoreGxPipeline(const GxPipeline& memo) {
         if (!pgm || !pgm->Address<u32*>()) {
             return false;
         }
-        const auto params = AmdGpu::GetParams(*pgm);
-        info->pgm_base = params.Base();
-        info->user_data = params.user_data;
-        info->RefreshFlatBuf();
+        info->pgm_base = reinterpret_cast<VAddr>(pgm->Address<u32*>());
+        info->user_data = pgm->user_data;
+        if (from_record && info->table_plan.valid && !info->tables_pending &&
+            info->table_plan.flat_dwords == info->srt_info.flattened_bufsize_dw) {
+            info->flattened_ud_buf.resize(info->srt_info.flattened_bufsize_dw);
+            std::memcpy(info->flattened_ud_buf.data(), info->user_data.data(), info->user_data.size_bytes());
+            gx_unfilled |= bit;
+        } else {
+            info->RefreshFlatBuf();
+        }
         return true;
     };
-    return restore(memo.vertex, HwStage::Vertex) && restore(memo.fragment, HwStage::Fragment);
+    return restore(memo.vertex, HwStage::Vertex, 1) && restore(memo.fragment, HwStage::Fragment, 2);
 }
 
 void PipelineCache::NoteGxRecords() {
@@ -642,7 +652,10 @@ const GraphicsPipeline* PipelineCache::GetGraphicsPipeline(const DrawIndirectPar
                                                            const PreparedDraw* prepared,
                                                            u64 gx_record) {
     used_prepared = nullptr;
-    if (prepared) {
+    gx_unfilled = 0;
+    const bool gx_use = BbEngine::GxRecords::Used() && gx_record && gx_pipelines.contains(gx_record);
+    if (prepared && !gx_use) {
+        BbSections::ScopeA prepared_scope{BbSections::APrepared};
         if (const auto* pipeline = TryPreparedPipeline(*prepared)) {
             used_prepared = prepared;
             return pipeline;
@@ -657,7 +670,7 @@ const GraphicsPipeline* PipelineCache::GetGraphicsPipeline(const DrawIndirectPar
             NoteGxRecords();
             if (BbEngine::GxRecords::Checked()) {
                 gx_expected = memo->second.pipeline;
-            } else if (RestoreGxPipeline(memo->second)) {
+            } else if (RestoreGxPipeline(memo->second, gx_use)) {
                 return memo->second.pipeline;
             }
         } else {
@@ -665,6 +678,8 @@ const GraphicsPipeline* PipelineCache::GetGraphicsPipeline(const DrawIndirectPar
             NoteGxRecords();
         }
     }
+    gx_unfilled = 0;
+    BbSections::ScopeA key_scope{BbSections::AKey};
     sel.draw_indirect_params = params;
     if (!RefreshGraphicsKey(sel)) {
         return nullptr;
@@ -675,9 +690,9 @@ const GraphicsPipeline* PipelineCache::GetGraphicsPipeline(const DrawIndirectPar
             std::printf("GX records: a record chose another pipeline than the registers (%llu so far)\n",
                         static_cast<unsigned long long>(gx_differ));
         }
-        if (gx_record && !gx_expected && !sel.motion && !sel.capture &&
+        if (gx_record && !gx_expected &&
             liverpool->regs.stage_enable.raw == AmdGpu::ShaderStageEnable::VgtStages::Vs) {
-            if (gx_pipelines.size() >= (1u << 16)) {
+            if (gx_pipelines.size() >= (1u << 18)) {
                 gx_pipelines.clear();
             }
             gx_pipelines[gx_record] = {pipeline,

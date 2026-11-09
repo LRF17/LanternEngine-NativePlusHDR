@@ -149,12 +149,16 @@ function(add_host_shader FILENAME SHADER_NAME)
     set(DEFINES ${ARGN})
     list(TRANSFORM DEFINES PREPEND "-D")
     set(INCLUDES "")
+    set(STAGE "")
+    if (FILENAME MATCHES "\\.frag$" AND SHADER_NAME MATCHES "_comp$")
+        set(STAGE -S comp)
+    endif()
     if (FILENAME MATCHES "^native_motion_blur")
         list(APPEND INCLUDES ${SHADER_SRC}/native_motion_blur.glsl)
     endif()
     add_custom_command(OUTPUT ${OUT}
         COMMAND ${CMAKE_COMMAND} -E make_directory ${SHADER_DIR}
-        COMMAND ${GLSLANG_COMPILER} --target-env vulkan1.3 -o ${OUT} --vn ${SYMBOL} ${DEFINES} ${SHADER_SRC}/${FILENAME}
+        COMMAND ${GLSLANG_COMPILER} --target-env vulkan1.3 -o ${OUT} --vn ${SYMBOL} ${STAGE} ${DEFINES} ${SHADER_SRC}/${FILENAME}
         COMMAND ${CMAKE_COMMAND} "-DHEADER_FILE=${OUT}" -P ${SHADER_SRC}/AddShaderHeaderInclude.cmake
         DEPENDS ${SHADER_SRC}/${FILENAME} ${INCLUDES} VERBATIM)
     set(SHADER_HEADERS ${SHADER_HEADERS} ${OUT} PARENT_SCOPE)
@@ -168,6 +172,14 @@ add_host_shader(fsr.comp fsr_easu_comp SAMPLE_EASU=1)
 add_host_shader(fsr.comp fsr_rcas_comp SAMPLE_RCAS=1)
 add_host_shader(post_process.frag post_process_frag)
 add_host_shader(gtao.frag gtao_frag)
+# graphics_ao_quality=1 (High, README.md): three directions, the denoiser, full internal resolution.
+add_host_shader(gtao.frag gtao_hq_frag GTAO_SPATIAL_HQ=1 GTAO_SLICES=3 GTAO_STEPS=6)
+add_host_shader(gtao.frag gtao_single_hq_frag GTAO_SPATIAL_HQ=1 GTAO_SLICES=1 GTAO_STEPS=6)
+add_host_shader(gtao.frag gtao_reference_frag GTAO_SPATIAL_HQ=1 GTAO_SLICES=16 GTAO_STEPS=32)
+add_host_shader(gtao.frag gtao_full_comp GTAO_COMPUTE=1 GTAO_SPATIAL_HQ=1 GTAO_SLICES=3 GTAO_STEPS=6)
+add_host_shader(gtao_denoise.comp gtao_denoise_comp)
+add_host_shader(gtao_denoise.comp gtao_denoise_full_comp FULLRES=1)
+add_host_shader(gtao_denoise.comp gtao_copy_comp COPY=1)
 add_host_shader(ssr.frag ssr_frag)
 add_host_shader(ssr_temporal.comp ssr_temporal_resolve_comp RESOLVE=1)
 add_host_shader(ssr_temporal.comp ssr_temporal_copy_comp COPY=1)
@@ -326,11 +338,15 @@ target_link_libraries(pipeline-archive-test PRIVATE fmt::fmt)
 add_executable(motion-history-test EXCLUDE_FROM_ALL ../tests/test_motion_history.cpp)
 target_compile_options(motion-history-test PRIVATE -UNDEBUG -Wall -Wextra -Werror)
 target_include_directories(motion-history-test PRIVATE ..)
+add_executable(lamp-fog-lights-test EXCLUDE_FROM_ALL ../tests/test_lamp_fog_lights.cpp)
+target_compile_options(lamp-fog-lights-test PRIVATE -UNDEBUG -Wall -Wextra -Werror)
+target_include_directories(lamp-fog-lights-test PRIVATE ..)
 foreach(effect_test
         "motion-blur-shader-test;test_motion_blur.cpp"
         "directional-shadow-test;test_directional_shadows.cpp"
         "rt-shadow-test;test_rt_shadows.cpp"
         "point-volumetric-test;test_point_volumetric.cpp"
+        "volumetric-tint-test;test_volumetric_tint.cpp"
         "effect-pipelines-test;test_effect_pipelines.cpp")
     list(GET effect_test 0 effect_test_name)
     list(GET effect_test 1 effect_test_source)
@@ -377,6 +393,12 @@ add_executable(settings-test EXCLUDE_FROM_ALL ../tests/test_settings.cpp shim/bb
     shim/bbport_menu_i18n.cpp)
 target_compile_options(settings-test PRIVATE -UNDEBUG -Wall -Wextra -Werror)
 target_include_directories(settings-test PRIVATE .. shim)
+# bbport: GTAO on synthetic scenes (Regular, High and its denoiser); plain Vulkan, no bbgpu.
+add_executable(gtao-test EXCLUDE_FROM_ALL ../tests/test_gtao.cpp)
+target_include_directories(gtao-test PRIVATE ${SHADER_INCLUDE})
+target_compile_options(gtao-test PRIVATE -UNDEBUG -Wall -Wextra -Werror -Wno-missing-field-initializers)
+target_link_libraries(gtao-test PRIVATE Vulkan::Vulkan)
+add_dependencies(gtao-test host_shaders)
 
 add_executable(scene-resolution-test EXCLUDE_FROM_ALL ../tests/test_scene_resolution.cpp ../tests/test_gpu_runtime_stubs.cpp)
 target_include_directories(scene-resolution-test PRIVATE shim shadps4 third_party/gcn/include)

@@ -1,8 +1,8 @@
 diff --git a/launcher/windows/BloodborneLauncher/Core/Choices.cs b/launcher/windows/BloodborneLauncher/Core/Choices.cs
-index fade0d6..1cc18f7 100644
+index 31a5855..94085cd 100644
 --- a/launcher/windows/BloodborneLauncher/Core/Choices.cs
 +++ b/launcher/windows/BloodborneLauncher/Core/Choices.cs
-@@ -249,7 +249,7 @@
+@@ -256,7 +256,7 @@
  
          public static readonly Choice[] HdrPaperWhite =
          {
@@ -11,7 +11,7 @@ index fade0d6..1cc18f7 100644
              new(L.T("250 nits"), "250"), new(L.T("300 nits"), "300"), new(L.T("400 nits"), "400"),
          };
  
-@@ -278,19 +278,28 @@
+@@ -285,19 +285,28 @@
  
          public static readonly Choice[] HdrMode =
          {
@@ -186,7 +186,7 @@ index 9221006..f5ec50c 100644
          public static readonly string ConfigFile = Path.Combine(ConfigDir, "settings.json");
  
 diff --git a/launcher/windows/BloodborneLauncher/Core/Updater.cs b/launcher/windows/BloodborneLauncher/Core/Updater.cs
-index ac7b1bd..46d5a37 100644
+index 58d8053..0e8290a 100644
 --- a/launcher/windows/BloodborneLauncher/Core/Updater.cs
 +++ b/launcher/windows/BloodborneLauncher/Core/Updater.cs
 @@ -23,11 +23,12 @@ namespace BloodborneLauncher.Core
@@ -198,10 +198,10 @@ index ac7b1bd..46d5a37 100644
          public static string ReleasesPage => $"https://github.com/{Repository}/releases";
  
 -        /// <summary>The engine build this launcher is made for (package.json "engine").</summary>
--        public const string EngineId = "lantern-room16-b30";
+-        public const string EngineId = "lantern-room16-0940";
 +        /// <summary>The engine build this launcher is made for (package.json "engine"). A release whose
 +        /// engine changed needs a new one: with the same, the updater replaces the launcher alone.</summary>
-+        public const string EngineId = "lantern-fps95-nativeplus-v7";
++        public const string EngineId = "lantern-fps95-nativeplus-v8";
  
          public const string ExeName = "Lantern Engine.exe";
          /// <summary>The launcher's name before 0.9.34 beta 8 (now a forwarder to ExeName).</summary>
@@ -261,7 +261,7 @@ index ac7b1bd..46d5a37 100644
          }
  
 diff --git a/launcher/windows/BloodborneLauncher/Localization/de.json b/launcher/windows/BloodborneLauncher/Localization/de.json
-index 4641d8b..a93d706 100644
+index e9acf49..2263d45 100644
 --- a/launcher/windows/BloodborneLauncher/Localization/de.json
 +++ b/launcher/windows/BloodborneLauncher/Localization/de.json
 @@ -756,6 +756,7 @@
@@ -273,7 +273,7 @@ index 4641d8b..a93d706 100644
    "Camera tuning": "Kameraanpassung",
    "Turns the three settings below on": "Schaltet die drei Einstellungen unten ein",
 diff --git a/launcher/windows/BloodborneLauncher/Localization/es.json b/launcher/windows/BloodborneLauncher/Localization/es.json
-index dd0495c..d38c250 100644
+index 6643ec9..0d7f59f 100644
 --- a/launcher/windows/BloodborneLauncher/Localization/es.json
 +++ b/launcher/windows/BloodborneLauncher/Localization/es.json
 @@ -756,6 +756,7 @@
@@ -285,7 +285,7 @@ index dd0495c..d38c250 100644
    "Camera tuning": "Ajuste de cámara",
    "Turns the three settings below on": "Activa los tres ajustes de abajo",
 diff --git a/launcher/windows/BloodborneLauncher/Localization/fr.json b/launcher/windows/BloodborneLauncher/Localization/fr.json
-index f680417..bb72307 100644
+index e3ee5d1..139d5b2 100644
 --- a/launcher/windows/BloodborneLauncher/Localization/fr.json
 +++ b/launcher/windows/BloodborneLauncher/Localization/fr.json
 @@ -756,6 +756,7 @@
@@ -297,7 +297,7 @@ index f680417..bb72307 100644
    "Camera tuning": "Réglage de la caméra",
    "Turns the three settings below on": "Active les trois réglages ci-dessous",
 diff --git a/launcher/windows/BloodborneLauncher/Localization/it.json b/launcher/windows/BloodborneLauncher/Localization/it.json
-index d24d4a4..6f454dc 100644
+index f1b9838..f250ab0 100644
 --- a/launcher/windows/BloodborneLauncher/Localization/it.json
 +++ b/launcher/windows/BloodborneLauncher/Localization/it.json
 @@ -756,6 +756,7 @@
@@ -309,7 +309,7 @@ index d24d4a4..6f454dc 100644
    "Camera tuning": "Regolazione della telecamera",
    "Turns the three settings below on": "Attiva le tre impostazioni qui sotto",
 diff --git a/launcher/windows/BloodborneLauncher/Localization/ja.json b/launcher/windows/BloodborneLauncher/Localization/ja.json
-index 3de2a9c..e1f8d81 100644
+index d3ae26a..ade567d 100644
 --- a/launcher/windows/BloodborneLauncher/Localization/ja.json
 +++ b/launcher/windows/BloodborneLauncher/Localization/ja.json
 @@ -756,6 +756,7 @@
@@ -321,7 +321,7 @@ index 3de2a9c..e1f8d81 100644
    "Camera tuning": "カメラの調整",
    "Turns the three settings below on": "以下の 3 つの設定を有効にします",
 diff --git a/launcher/windows/BloodborneLauncher/Localization/ko.json b/launcher/windows/BloodborneLauncher/Localization/ko.json
-index 1b488ce..6d81a67 100644
+index 78dfc5c..d1f2464 100644
 --- a/launcher/windows/BloodborneLauncher/Localization/ko.json
 +++ b/launcher/windows/BloodborneLauncher/Localization/ko.json
 @@ -756,6 +756,7 @@
@@ -333,7 +333,7 @@ index 1b488ce..6d81a67 100644
    "Camera tuning": "카메라 조정",
    "Turns the three settings below on": "아래 세 가지 설정을 켭니다",
 diff --git a/launcher/windows/BloodborneLauncher/Localization/pl.json b/launcher/windows/BloodborneLauncher/Localization/pl.json
-index af68742..0c29e66 100644
+index 43f5ec3..6a1c0be 100644
 --- a/launcher/windows/BloodborneLauncher/Localization/pl.json
 +++ b/launcher/windows/BloodborneLauncher/Localization/pl.json
 @@ -756,6 +756,7 @@
@@ -345,7 +345,7 @@ index af68742..0c29e66 100644
    "Camera tuning": "Strojenie kamery",
    "Turns the three settings below on": "Włącza trzy poniższe ustawienia",
 diff --git a/launcher/windows/BloodborneLauncher/Localization/pt-BR.json b/launcher/windows/BloodborneLauncher/Localization/pt-BR.json
-index c4f9574..12b89c4 100644
+index eed16ca..6e02e60 100644
 --- a/launcher/windows/BloodborneLauncher/Localization/pt-BR.json
 +++ b/launcher/windows/BloodborneLauncher/Localization/pt-BR.json
 @@ -756,6 +756,7 @@
@@ -357,7 +357,7 @@ index c4f9574..12b89c4 100644
    "Camera tuning": "Ajuste de câmera",
    "Turns the three settings below on": "Ativa as três configurações abaixo",
 diff --git a/launcher/windows/BloodborneLauncher/Localization/ru.json b/launcher/windows/BloodborneLauncher/Localization/ru.json
-index 172e4b6..eeb29ba 100644
+index e07afed..9084719 100644
 --- a/launcher/windows/BloodborneLauncher/Localization/ru.json
 +++ b/launcher/windows/BloodborneLauncher/Localization/ru.json
 @@ -756,6 +756,7 @@
@@ -369,7 +369,7 @@ index 172e4b6..eeb29ba 100644
    "Camera tuning": "Настройка камеры",
    "Turns the three settings below on": "Включает три настройки ниже",
 diff --git a/launcher/windows/BloodborneLauncher/Localization/tr.json b/launcher/windows/BloodborneLauncher/Localization/tr.json
-index 73ae9f0..f981e91 100644
+index 4ea657b..39783f9 100644
 --- a/launcher/windows/BloodborneLauncher/Localization/tr.json
 +++ b/launcher/windows/BloodborneLauncher/Localization/tr.json
 @@ -756,6 +756,7 @@
@@ -381,7 +381,7 @@ index 73ae9f0..f981e91 100644
    "Camera tuning": "Kamera ayarı",
    "Turns the three settings below on": "Aşağıdaki üç ayarı açar",
 diff --git a/launcher/windows/BloodborneLauncher/Localization/uk.json b/launcher/windows/BloodborneLauncher/Localization/uk.json
-index 7c74b45..3962277 100644
+index ba37046..5a07a4f 100644
 --- a/launcher/windows/BloodborneLauncher/Localization/uk.json
 +++ b/launcher/windows/BloodborneLauncher/Localization/uk.json
 @@ -756,6 +756,7 @@
@@ -393,7 +393,7 @@ index 7c74b45..3962277 100644
    "Camera tuning": "Налаштування камери",
    "Turns the three settings below on": "Вмикає три налаштування нижче",
 diff --git a/launcher/windows/BloodborneLauncher/Localization/zh-CN.json b/launcher/windows/BloodborneLauncher/Localization/zh-CN.json
-index 7cda9b3..c9b8ecd 100644
+index 7571bd2..8e0a010 100644
 --- a/launcher/windows/BloodborneLauncher/Localization/zh-CN.json
 +++ b/launcher/windows/BloodborneLauncher/Localization/zh-CN.json
 @@ -756,6 +756,7 @@
@@ -405,7 +405,7 @@ index 7cda9b3..c9b8ecd 100644
    "Camera tuning": "镜头调校",
    "Turns the three settings below on": "启用下方三项设置",
 diff --git a/launcher/windows/BloodborneLauncher/Localization/zh-TW.json b/launcher/windows/BloodborneLauncher/Localization/zh-TW.json
-index e06187a..be2470a 100644
+index aea0d2e..6912ddc 100644
 --- a/launcher/windows/BloodborneLauncher/Localization/zh-TW.json
 +++ b/launcher/windows/BloodborneLauncher/Localization/zh-TW.json
 @@ -756,6 +756,7 @@
@@ -417,7 +417,7 @@ index e06187a..be2470a 100644
    "Camera tuning": "鏡頭調整",
    "Turns the three settings below on": "開啟下方三項設定",
 diff --git a/launcher/windows/BloodborneLauncher/MainWindow.xaml b/launcher/windows/BloodborneLauncher/MainWindow.xaml
-index 1b9249f..0d90eaa 100644
+index 8acd3e9..0c8e3a0 100644
 --- a/launcher/windows/BloodborneLauncher/MainWindow.xaml
 +++ b/launcher/windows/BloodborneLauncher/MainWindow.xaml
 @@ -5,7 +5,7 @@
@@ -552,7 +552,7 @@ index fd86212..de0bcce 100644
              Group(L.T("Language"));
              ComboRow(SymbolRegular.LocalLanguage24, L.T("In-game menu language"), L.T("The port's settings menu (Insert or L3 + R3)"),
 diff --git a/launcher/windows/BloodborneLauncher/Views/GraphicsPage.cs b/launcher/windows/BloodborneLauncher/Views/GraphicsPage.cs
-index 637cbdd..a23f1cd 100644
+index 0162d49..b8a1ecc 100644
 --- a/launcher/windows/BloodborneLauncher/Views/GraphicsPage.cs
 +++ b/launcher/windows/BloodborneLauncher/Views/GraphicsPage.cs
 @@ -13,6 +13,11 @@ namespace BloodborneLauncher.Views
@@ -592,7 +592,7 @@ index 637cbdd..a23f1cd 100644
  
              Group(L.T("Menus"));
              _ui4k = ToggleRow(SymbolRegular.ZoomIn24, L.T("4K menus"),
-@@ -226,6 +238,15 @@ namespace BloodborneLauncher.Views
+@@ -230,6 +242,15 @@ namespace BloodborneLauncher.Views
              double step = 0.05, double fallback = 1.0) =>
              SliderRow(icon, title, null, min, max, step, () => ParseDouble(Ini.Get(key, Fmt(fallback)), fallback), v => Ini.Set(key, Fmt(v)), into: into);
  
@@ -608,7 +608,7 @@ index 637cbdd..a23f1cd 100644
          /// <summary>An RTX 40 or 50 card (desktop or laptop): the GPUs NVIDIA's frame generation runs on.</summary>
          private static bool DlssFrameGenGpu() =>
              Hardware.Detect() is { Rtx: true } hardware &&
-@@ -243,7 +264,28 @@ namespace BloodborneLauncher.Views
+@@ -247,7 +268,28 @@ namespace BloodborneLauncher.Views
              _ => SymbolRegular.Color24,
          };
  
@@ -653,22 +653,252 @@ index 89d445b..c0005db 100644
      }
  
      /// <summary>
+diff --git a/launcher/windows/LanternLauncher/MainWindow.cs b/launcher/windows/LanternLauncher/MainWindow.cs
+index 9e56699..985eae3 100644
+--- a/launcher/windows/LanternLauncher/MainWindow.cs
++++ b/launcher/windows/LanternLauncher/MainWindow.cs
+@@ -78,7 +78,7 @@ namespace BloodborneLauncher
+ 
+         public MainWindow()
+         {
+-            Title = "Lantern Engine";
++            Title = "Lantern Engine Native+ HDR";
+             Width = 1040;
+             Height = 780;
+             MinWidth = 820;
+@@ -480,7 +480,7 @@ namespace BloodborneLauncher
+             grid.Children.Add(_searchArea);
+ 
+             var title = new TextBlock { HorizontalAlignment = HorizontalAlignment.Center, VerticalAlignment = VerticalAlignment.Center, FontSize = 12, IsHitTestVisible = false };
+-            var name = new Run("Lantern Engine") { FontWeight = FontWeight.SemiBold };
++            var name = new Run("Lantern Engine Native+ HDR") { FontWeight = FontWeight.SemiBold };
+             name.Bind(TextElement.ForegroundProperty, this.GetResourceObservable("TextFillColorPrimaryBrush"));
+             _titlePage.Bind(TextElement.ForegroundProperty, this.GetResourceObservable("TextFillColorTertiaryBrush"));
+             title.Inlines = new InlineCollection { name, _titlePage };
+diff --git a/launcher/windows/LanternLauncher/Views/DisplayPage.cs b/launcher/windows/LanternLauncher/Views/DisplayPage.cs
+index 2345dd2..2c18f1e 100644
+--- a/launcher/windows/LanternLauncher/Views/DisplayPage.cs
++++ b/launcher/windows/LanternLauncher/Views/DisplayPage.cs
+@@ -11,8 +11,34 @@ namespace BloodborneLauncher.Views
+     {
+         private readonly ComboBox _monitor = new() { Width = 360, VerticalAlignment = VerticalAlignment.Center };
+         private bool _refreshingMonitors;
++        private Control? _hdrBoostRow;
++        private Control? _hdrBrightnessRow;
++        private Control? _hdrColourRow;
++        private Control? _hdrToneMapperRow;
++        /// <summary>HDR › Advanced: its "Advanced (n)" label counts the rows on show, and the HDR source
++        /// above shows some and hides others (RefreshCount).</summary>
++        private AdvancedSection? _hdrAdvanced;
+ 
+-        public override void OnShown() => RefreshMonitors();
++        public override void OnShown()
++        {
++            RefreshMonitors();
++            RefreshHdrRows();
++        }
++
++        /// <summary>hdr_mode as the engine reads it: psychov30, Native+'s name before 0.9.38.2, is Native+.</summary>
++        private static string HdrMode() => HdrGrading.ModeValue(Ini.Get("hdr_mode", "native"));
++
++        private void RefreshHdrRows()
++        {
++            var mode = HdrMode();
++            var nativePlus = mode == "nativeplus";
++            var native = mode == "native";
++            if (_hdrBoostRow != null) _hdrBoostRow.IsVisible = !nativePlus;
++            if (_hdrBrightnessRow != null) _hdrBrightnessRow.IsVisible = native || nativePlus;
++            if (_hdrColourRow != null) _hdrColourRow.IsVisible = native;
++            if (_hdrToneMapperRow != null) _hdrToneMapperRow.IsVisible = nativePlus;
++            _hdrAdvanced?.RefreshCount();
++        }
+ 
+         private void RefreshMonitors()
+         {
+@@ -180,12 +206,18 @@ namespace BloodborneLauncher.Views
+                         : L.T("This display shows no HDR");
+             IniToggle(SymbolRegular.Hdr24, L.T("HDR output"), hdrHint, "hdr");
+             ComboRow(SymbolRegular.Lightbulb24, L.T("HDR source"),
+-                L.T("Native: highlights as bright as they are in the game's scene. Expanded: the SDR picture's bright parts made brighter"),
+-                Choices.HdrMode, () => Ini.Get("hdr_mode", "native"), v => Ini.Set("hdr_mode", v));
+-            SliderRow(SymbolRegular.BrightnessHigh24, L.T("Paper white"), L.T("How bright the game's white is, in nits. Range: 10–500"),
+-                10, 500, 1, () => ParseDouble(Ini.Get("hdr_paper_white", "200"), 200),
++                "Native+: the light of the game's scene kept to the screen, tone mapped to your display's peak by Vanilla+ or PsychoV. Native: highlights derived from the game's HDR scene. Expanded: bright SDR pixels expanded towards the peak. Entering or leaving Native+ requires restarting the game.",
++                Choices.HdrMode, HdrMode, v => Ini.Set("hdr_mode", v), changed: RefreshHdrRows);
++            // Defaults, as the engine's: paper white 203 (BT.2408's reference white); the peak from
++            // the display (hdr_peak_auto) unless it is set.
++            const double DefaultPaperWhite = 203;
++            var paperWhite = SliderRow(SymbolRegular.BrightnessHigh24, L.T("Paper white"), "How bright the game's white is, in nits. Default: 203. Range: 10–500",
++                10, 500, 1, () => ParseDouble(Ini.Get("hdr_paper_white", ""), DefaultPaperWhite),
+                 v => Ini.Set("hdr_paper_white", v.ToString("0", System.Globalization.CultureInfo.InvariantCulture)),
+                 format: L.T("0' nits'"), valueWidth: 82);
++            if (paperWhite.Parent is Panel paperWhiteRow)
++                paperWhiteRow.Children.Add(IconButton(SymbolRegular.ArrowCounterclockwise24, "Reset to 203 nits",
++                    (_, _) => paperWhite.Value = DefaultPaperWhite));
+             ToggleRow(SymbolRegular.Desktop24, L.T("Peak brightness from the display"),
+                 L.T("The peak Windows reports for the display the game is on (the Windows HDR Calibration app's, once it has run). Off: the value below"),
+                 () => Ini.Get("hdr_peak_auto", "1") != "0", v => Ini.Set("hdr_peak_auto", v ? "1" : "0"));
+@@ -193,13 +225,43 @@ namespace BloodborneLauncher.Views
+                 10, 4000, 10, () => ParseDouble(Ini.Get("hdr_peak", "1000"), 1000),
+                 v => Ini.Set("hdr_peak", v.ToString("0", System.Globalization.CultureInfo.InvariantCulture)),
+                 format: L.T("0' nits'"), valueWidth: 82);
++            // UI brightness in nits, as RenoDX's (48..500, 203 by default), whatever Paper white. An
++            // older bbport.ini's hdr_ui_brightness (times paper white) shows converted, as the
++            // engine reads it, and goes once this is set.
++            const double DefaultUiNits = 203;
++            double UiNits()
++            {
++                if (Ini.Raw("hdr_ui_nits") is { } nits) return ParseDouble(nits, DefaultUiNits);
++                if (Ini.Raw("hdr_ui_brightness") is { } ratio)
++                    return Math.Round(ParseDouble(ratio, 1) * ParseDouble(Ini.Get("hdr_paper_white", ""), DefaultPaperWhite));
++                return DefaultUiNits;
++            }
++            var uiNits = SliderRow(SymbolRegular.TextFont24, L.T("UI brightness"),
++                "Native and Native+: how bright the HUD, menus and subtitles are, in nits, whatever Paper white. Default: 203. Range: 48–500. Also in the in-game menu, live",
++                48, 500, 1, UiNits,
++                v =>
++                {
++                    Ini.Set("hdr_ui_nits", v.ToString("0", System.Globalization.CultureInfo.InvariantCulture));
++                    Ini.Set("hdr_ui_brightness", null);
++                },
++                format: L.T("0' nits'"), valueWidth: 82);
++            _hdrBrightnessRow = Body.Children[^1];
++            if (uiNits.Parent is Panel uiNitsRow)
++                uiNitsRow.Children.Add(IconButton(SymbolRegular.ArrowCounterclockwise24, "Reset to 203 nits",
++                    (_, _) => uiNits.Value = DefaultUiNits));
+             ComboRow(SymbolRegular.Sparkle24, L.T("Highlight boost"), L.T("Off keeps the game's own look; higher makes lamps, fire and the sky brighter"),
+                 Choices.HdrBoost, () => Ini.Get("hdr_boost", "0.25"), v => Ini.Set("hdr_boost", v));
++            _hdrBoostRow = Body.Children[^1];
++            ComboRow(SymbolRegular.Lightbulb24, L.T("Tone mapper"),
++                "Native+ only. Vanilla+ (by souperman9, from his RenoDX Bloodborne mod): the game's image up to mid grey, brighter highlights up to your display's peak. PsychoV: RenoDX's PsychoV-30 with Vanilla+'s bloom; deeper blacks, softer highlights with the most detail near the peak. Its Vanilla+ Highlights and Hue Correction (in-game menu) take it towards Vanilla+'s brightness and hues. Also in the in-game menu, live",
++                Choices.HdrToneMapper, () => Choices.HdrToneMapperValue(Ini.Get("hdr_tonemapper", "5")), v => Ini.Set("hdr_tonemapper", v));
++            _hdrToneMapperRow = Body.Children[^1];
+             var hdrMore = Advanced();
+-            ComboRow(SymbolRegular.TextFont24, L.T("UI brightness"), L.T("Native source only: how bright the HUD, menus and subtitles are, against paper white"),
+-                Choices.HdrUiBrightness, () => Ini.Get("hdr_ui_brightness", "1"), v => Ini.Set("hdr_ui_brightness", v), hdrMore);
++            _hdrAdvanced = hdrMore.Parent as AdvancedSection;
+             ComboRow(SymbolRegular.Color24, L.T("UI colour"), L.T("Native source only: Vivid shows the HUD and menus with the colours a wide-gamut monitor gives SDR; Exact keeps sRGB's"),
+                 Choices.HdrUiColor, () => Ini.Get("hdr_ui_color", "1"), v => Ini.Set("hdr_ui_color", v), hdrMore);
++            _hdrColourRow = hdrMore.Children[^1];
++            RefreshHdrRows();
+ 
+             Group(L.T("Language"));
+             ComboRow(SymbolRegular.LocalLanguage24, L.T("In-game menu language"), L.T("The port's settings menu (Insert or L3 + R3)"),
+diff --git a/launcher/windows/LanternLauncher/Views/GraphicsPage.cs b/launcher/windows/LanternLauncher/Views/GraphicsPage.cs
+index edbc9ba..92a1df6 100644
+--- a/launcher/windows/LanternLauncher/Views/GraphicsPage.cs
++++ b/launcher/windows/LanternLauncher/Views/GraphicsPage.cs
+@@ -11,6 +11,11 @@ namespace BloodborneLauncher.Views
+         private TextBlock? _motionBlurHint;
+         private readonly SettingRow _presetCard, _renderScaleCard, _sharpenCard, _sharpnessCard, _mipBiasCard;
+         private readonly SettingRow _frameGenFramesCard, _frameGenDynamicCard, _reflexCard, _frameGenCapCard;
++        /// <summary>Picture's Bloom, Saturation, Brightness and Contrast: the Native+ chain grades them while
++        /// it runs (HdrGrading.Active), so the engine leaves them as the game draws them and they are hidden.</summary>
++        private readonly List<SettingRow> _pictureGradedRows = new();
++        /// <summary>The line under them saying where they are while that happens (the in-game menu).</summary>
++        private TextBlock? _pictureGradedNote;
+ 
+         public GraphicsPage() : base(L.T("Graphics"),
+             L.T("Stored in lantern.ini; the upscaler can also be changed in game (Insert or L3 + R3)."))
+@@ -90,13 +95,18 @@ namespace BloodborneLauncher.Views
+             IniToggle(SymbolRegular.CircleHalfFill24, L.T("Vignette"), null, "graphics_vignette", picture);
+             IniSlider(SymbolRegular.DarkTheme24, L.T("Ambient occlusion strength"), 0, 3, "graphics_ao_strength", picture);
+             IniSlider(SymbolRegular.WeatherSunny24, L.T("Shadow distance"), 0.5, 4, "graphics_shadow_scale", picture);
+-            IniSlider(SymbolRegular.Lightbulb24, L.T("Bloom"), 0, 3, "graphics_bloom", picture);
+-            IniSlider(SymbolRegular.Color24, L.T("Saturation"), 0, 3, "graphics_saturation", picture);
+-            IniSlider(SymbolRegular.BrightnessHigh24, L.T("Brightness"), 0, 3, "graphics_brightness", picture);
+-            IniSlider(SymbolRegular.DarkTheme24, L.T("Contrast"), 0.8, 1.2, "graphics_contrast", picture, step: 0.01);
++            // The four the Native+ chain takes over while it grades (UpdatePicture hides them then).
++            GradedSlider(SymbolRegular.Lightbulb24, L.T("Bloom"), 0, 3, "graphics_bloom", picture);
++            GradedSlider(SymbolRegular.Color24, L.T("Saturation"), 0, 3, "graphics_saturation", picture);
++            GradedSlider(SymbolRegular.BrightnessHigh24, L.T("Brightness"), 0, 3, "graphics_brightness", picture);
++            GradedSlider(SymbolRegular.DarkTheme24, L.T("Contrast"), 0.8, 1.2, "graphics_contrast", picture, step: 0.01);
+             IniSlider(SymbolRegular.Color24, L.T("Hue"), -180, 180, "graphics_hue", picture, step: 1, fallback: 0);
+             IniSlider(SymbolRegular.WeatherFog24, L.T("Fog"), 0, 3, "graphics_fog", picture);
+             Body.Children.Add(picture);
++            // Where they went, while they are hidden: the in-game menu's grading, which is live there.
++            _pictureGradedNote = Text(L.T("Native+ with HDR on: brightness, contrast, saturation and bloom are graded in the in-game menu (Insert or L3 + R3), live"), "Faint");
++            Body.Children.Add(_pictureGradedNote);
++            UpdatePicture();
+ 
+             Group(L.T("Menus"));
+             _ui4k = ToggleRow(SymbolRegular.ZoomIn24, L.T("4K menus"),
+@@ -230,6 +240,15 @@ namespace BloodborneLauncher.Views
+             double step = 0.05, double fallback = 1.0) =>
+             SliderRow(icon, title, null, min, max, step, () => ParseDouble(Ini.Get(key, Fmt(fallback)), fallback), v => Ini.Set(key, Fmt(v)), into: into);
+ 
++        /// <summary>A Picture slider the Native+ chain replaces while it grades (hdr_grading): kept in
++        /// _pictureGradedRows, so UpdatePicture hides it and the note says where it is.</summary>
++        private void GradedSlider(SymbolRegular icon, string title, double min, double max, string key, Panel into,
++            double step = 0.05)
++        {
++            IniSlider(icon, title, min, max, key, into, step);
++            _pictureGradedRows.Add((SettingRow)into.Children[^1]);
++        }
++
+         private static bool DlssFrameGenGpu() =>
+             Hardware.Detect() is { Rtx: true } hardware &&
+             System.Text.RegularExpressions.Regex.IsMatch(hardware.Gpu, @"RTX\s*(PRO\s*)?[45]0\d\d", System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+@@ -245,7 +264,26 @@ namespace BloodborneLauncher.Views
+             _ => SymbolRegular.Color24,
+         };
+ 
+-        public override void OnShown() => UpdateUpscaler();
++        public override void OnShown()
++        {
++            UpdateUpscaler();
++            UpdatePicture();
++        }
++
++        /// <summary>
++        /// Picture's Bloom, Saturation, Brightness and Contrast are the game's own look only while the
++        /// Native+ chain does not grade: with HDR output on and the Native+ source the chain grades
++        /// instead (engine/graphics.cpp's hdr_grading), and the engine leaves them as drawn. Hidden
++        /// then, with the note saying where they are; HDR off, or Native and Expanded, keeps them.
++        /// </summary>
++        private void UpdatePicture()
++        {
++            var grades = HdrGrading.Active(Ini.Get("hdr"), Ini.Get("hdr_mode", "native"));
++            foreach (var row in _pictureGradedRows)
++                row.IsVisible = !grades;
++            if (_pictureGradedNote != null)
++                _pictureGradedNote.IsVisible = grades;
++        }
+ 
+         private static bool DlssFound() => Paths.DlssRuntime != null;
+ 
+diff --git a/launcher/windows/LanternLauncher/Views/LauncherPage.cs b/launcher/windows/LanternLauncher/Views/LauncherPage.cs
+index 96777af..a5270ad 100644
+--- a/launcher/windows/LanternLauncher/Views/LauncherPage.cs
++++ b/launcher/windows/LanternLauncher/Views/LauncherPage.cs
+@@ -357,6 +357,10 @@ namespace BloodborneLauncher.Views
+             var count = Rows.Children.OfType<SettingRow>().Count(r => r.IsVisible);
+             _label.Text = count > 0 ? $"{_title} ({count})" : _title;
+         }
++
++        /// <summary>Counts the rows again: a choice elsewhere on the page shows and hides them (the HDR
++        /// source, which leaves Native+ its tone mapper and takes Native's UI colour away).</summary>
++        public void RefreshCount() => ShowCount();
+     }
+ 
+     /// <summary>
 diff --git a/launcher/windows/tests/HdrGradingChecks/HdrGradingChecks.csproj b/launcher/windows/tests/HdrGradingChecks/HdrGradingChecks.csproj
 new file mode 100644
-index 0000000..ba598bd
+index 0000000..7e6d7cf
 --- /dev/null
 +++ b/launcher/windows/tests/HdrGradingChecks/HdrGradingChecks.csproj
-@@ -0,0 +1,12 @@
+@@ -0,0 +1,13 @@
 +<Project Sdk="Microsoft.NET.Sdk">
++  <!-- HdrGrading.cs alone, linked: the native launcher (LanternLauncher) uses the same Core file,
++       and the WPF launcher no longer builds since 0.9.40. -->
 +  <PropertyGroup>
 +    <OutputType>Exe</OutputType>
-+    <TargetFramework>net8.0-windows</TargetFramework>
++    <TargetFramework>net8.0</TargetFramework>
 +    <ImplicitUsings>enable</ImplicitUsings>
 +    <Nullable>enable</Nullable>
-+    <UseWPF>true</UseWPF>
 +  </PropertyGroup>
 +  <ItemGroup>
-+    <ProjectReference Include="../../BloodborneLauncher/BloodborneLauncher.csproj" />
++    <Compile Include="../../BloodborneLauncher/Core/HdrGrading.cs" Link="Core/HdrGrading.cs" />
 +  </ItemGroup>
 +</Project>
 diff --git a/launcher/windows/tests/HdrGradingChecks/Program.cs b/launcher/windows/tests/HdrGradingChecks/Program.cs

@@ -10,8 +10,9 @@ root = Path(sys.argv[1]).resolve()
 source = root / 'gpu/shadps4/video_core/host_shaders'
 # Lantern's lighting effects that read the game's constant buffer as the native compiler lays it
 # out (uniform dwords, Profile::uniform_dword_layout): left off without uniformBufferStandardLayout
-# (engine/docs/COMPATIBILITY.md, Lighting effects).
-DWORD_UNIFORMS = {'gtao_frag', 'ssr_frag', 'ssr_trace_comp', 'native_motion_blur_frag'}
+# (engine/docs/COMPATIBILITY.md, Lighting effects). Found by their source's scalar-layout uniform
+# blocks, so each new variant (gtao_hq_frag, gtao_denoise_comp, ...) is checked the same way.
+SCALAR_UNIFORM = re.compile(r'layout\s*\(\s*scalar[^)]*\)\s*uniform\b')
 count = 0
 with tempfile.TemporaryDirectory() as temp:
     out = Path(temp) / 'shader.spv'
@@ -20,11 +21,14 @@ with tempfile.TemporaryDirectory() as temp:
         if not match:
             continue
         file, name, *defines = match[1].split()
-        subprocess.run(['glslangValidator', '--target-env', 'vulkan1.3',
+        # A .frag built as a compute shader (gtao.frag as gtao_full_comp), as CMake's add_host_shader.
+        stage = ['-S', 'comp'] if file.endswith('.frag') and name.endswith('_comp') else []
+        subprocess.run(['glslangValidator', '--target-env', 'vulkan1.3', *stage,
                         *['-D' + d for d in defines], str(source / file), '-o', str(out)], check=True)
         # The native shader compiler's constant buffer: a uniform buffer with std430 strides
         # (VK_KHR_uniform_buffer_standard_layout, which Lantern requires for it).
-        standard = 'BB_CB_UBO=1' in defines or name in DWORD_UNIFORMS
+        standard = ('BB_CB_UBO=1' in defines or
+                    SCALAR_UNIFORM.search((source / file).read_text(encoding='utf-8', errors='replace')) is not None)
         layout = ['--uniform-buffer-standard-layout'] if standard else []
         subprocess.run(['spirv-val', '--target-env', 'vulkan1.3', *layout, str(out)], check=True)
         if name == 'bb_composite_hdr_frag':

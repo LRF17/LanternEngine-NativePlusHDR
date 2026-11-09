@@ -150,9 +150,9 @@ Preset **Off** shows the game's own SDR look in HDR, as a reference.
 
 ## Upscalers and frame generation
 
-- **Upscalers**: Lantern's upscalers (FSR 3.1, FSR 4, FSR 4.1.1, DLSS, TAA) work in Native+, through
-  Lantern's own upscaler path. The scene is upscaled in 16-bit, so its highlights survive the
-  upscale. XeSS, new in Lantern 0.9.39 beta 29, goes the same way but has not been tested yet. This holds at every output resolution and preset: before 0.9.38.4,
+- **Upscalers**: Lantern's upscalers (FSR from AMD's FSR SDK, FSR 4.1.1, DLSS, TAA) work in Native+,
+  through Lantern's own upscaler path. The scene is upscaled in 16-bit, so its highlights survive the
+  upscale. XeSS goes the same way but has not been tested yet. This holds at every output resolution and preset: before 0.9.38.4,
   some (1440p Quality, 1600x900, 3440x1440 Performance, 13 of the launcher's 75) left the
   image 8-bit, in SDR inside the HDR signal ("DLSS: ... LDR input" in the log), because the
   game pads its render targets' width to a multiple of 128.
@@ -175,7 +175,7 @@ Preset **Off** shows the game's own SDR look in HDR, as a reference.
 - **Known: the HUD over very bright areas** (the sun, a lamp) is brighter than UI Brightness. The
   HUD is told apart from the scene by comparing it with a copy taken just before it, and over
   highlights the two blend. RenoDX's mods show the same.
-- **The game crashes at startup with a ReShade add-on**: ReLimiter crashes Lantern 0.9.39 at
+- **The game crashes at startup with a ReShade add-on**: ReLimiter crashes Lantern 0.9.39 and later at
   startup, and Display Commander (its successor) while Vulkan starts with DLSS frame generation,
   in HDR or not. ReShade alone works. Rename the add-on (`.addon64` to `.addon64.off`, in
   `engine\out`) and cap the frame rate with Lantern's own limit (or frame generation's cap).
@@ -191,10 +191,11 @@ Preset **Off** shows the game's own SDR look in HDR, as a reference.
 ## Versions and updates
 
 - Versions follow Lantern's: **0.9.38.1** is this fork's first release on Lantern 0.9.38,
-  **0.9.38.2**, **0.9.38.3** and **0.9.38.4** the next ones; **0.9.39.1** the first on Lantern 0.9.39
-  (its betas on Lantern 0.9.39's betas). Betas (`0.9.39.1-beta.1`) come from the
+  **0.9.38.2**, **0.9.38.3** and **0.9.38.4** the next ones; **0.9.40.1** the first on Lantern 0.9.40
+  (the 0.9.39.1 betas were on Lantern 0.9.39's betas). Betas (`0.9.40.1-beta.1`) come from the
   `lantern-Native+HDR-beta` branch, releases from `lantern-Native+HDR`.
-- The launcher updates itself from this fork's releases.
+- The launcher updates itself from this fork's releases. Since 0.9.40.1 it is Lantern's new native
+  launcher, with the same Native+ settings (Display › HDR, Graphics › Picture).
 - **Updating from an earlier version**: your settings are kept. Settings that no longer exist
   (Target gamut, Gamut Compression, Compression, Color Table Bridge) are ignored, the old tone
   mappers (Vanilla, Hybrid, Neutwo) read as Vanilla+, and `hdr_mode=psychov30` reads as
@@ -219,14 +220,15 @@ Preset **Off** shows the game's own SDR look in HDR, as a reference.
 
 ## Build from source
 
-This fork carries reproducible patches over Lantern 0.9.39 beta 30: `ports/lantern/nativeplus-engine.patch`
+This fork carries reproducible patches over Lantern 0.9.40: `ports/lantern/nativeplus-engine.patch`
 on Lantern's `engine/` and `nativeplus-launcher.patch` on its launcher (this fork's `launcher/`
 already holds it). The GitHub workflow (`.github/workflows/lantern-nativeplus.yml`) copies the
-pinned Lantern's `engine/`, applies the patches, builds the engine, its settings tests and the
-launcher, checks the HDR shaders (against RenoDX's own code for the gamut bridge) and assembles
-the package with the official 0.9.39 beta 30 runtime files (DLLs, models, shader catalogs). Pinned inputs:
+pinned Lantern's `engine/`, applies the patches, builds the engine (Lantern 0.9.40 also needs Rust's
+`cargo`), its settings tests and the native launcher (`launcher/windows/LanternLauncher`, NativeAOT),
+checks the HDR shaders (against RenoDX's own code for the gamut bridge) and assembles the package
+with the official 0.9.40 runtime files (DLLs, models, shader catalogs). Pinned inputs:
 
-- LanternEngine `4ab0b715969059700bad6454b0a9df127c78ba27` (0.9.39 beta 30).
+- LanternEngine `ea34b450ad2120a27fa8140fad7420219aae9796` (0.9.40).
 - RenoDX `b6b32f47789ff9d0e640a0e0db6c9421b5397f34` (shader checks, and the source of the GLSL
   PsychoV-30).
 

@@ -14,8 +14,8 @@ import urllib.request
 from zipfile import ZipFile
 
 BASE_URL = ('https://github.com/Awakenchan/LanternEngine/releases/download/'
-            'v0.9.39-beta.30/LanternEngine-v0.9.39-beta.30-win64.zip')
-BASE_SHA = '50d15f69cdd4a80fa4da777737d58155e655fc29edfdda4684b4d0151f67b59f'
+            'v0.9.40/LanternEngine-v0.9.40-win64.zip')
+BASE_SHA = 'd0401188f4d755880c26aad0a577beeaea7dc5d9ba355c2764e64134dc4d1055'
 PYTHON_URL = 'https://www.python.org/ftp/python/3.12.10/python-3.12.10-embed-amd64.zip'
 PYTHON_SHA = '4acbed6dd1c744b0376e3b1cf57ce906f9dc9e95e68824584c8099a63025a3c3'
 
@@ -77,9 +77,9 @@ def assemble(engine, overlay, destination, cache):
     version = os.environ.get('BB_RELEASE_VERSION') or (Path(__file__).with_name('VERSION')
                                                         .read_text(encoding='utf-8').strip())
     (destination / 'package.json').write_text(json.dumps({
-        'version': version, 'engine': 'lantern-fps95-nativeplus-v7',
+        'version': version, 'engine': 'lantern-fps95-nativeplus-v8',
         'source': 'https://github.com/LRF17/LanternEngine-NativePlusHDR/tree/lantern-Native+HDR',
-        'runtime_resources': 'v0.9.39-beta.30', 'python': '3.12.10',
+        'runtime_resources': 'v0.9.40', 'python': '3.12.10',
     }, indent=2), encoding='utf-8')
     # Explicit shipped HDR defaults in the shipped settings (engine\lantern.default.ini, which the
     # launcher copies to lantern.ini when a folder has neither it nor an older bbport.ini), so no
@@ -94,7 +94,7 @@ def assemble(engine, overlay, destination, cache):
     ini.write_text('\n'.join(lines + [f'{k}={v}' for k, v in defaults.items()]) + '\n', encoding='utf-8')
     required = ['Lantern Engine.exe', 'Bloodborne.exe', 'engine/out/bb-probe.exe', 'engine/out/bb-start.exe',
                 'engine/out/bb-engine-assets.exe', 'engine/out/bb-gpu-capabilities.exe',
-                'engine/out/bb-shader-lab.exe', 'engine/out/gpu-cache.id',
+                'engine/out/bb-shader-lab.exe', 'engine/out/bb-isa-scan.exe', 'engine/out/gpu-cache.id',
                 'engine/out/nvngx_dlss.dll', 'engine/scripts/run_windows.py',
                 'engine/patches/redzone.json', 'engine/tools/python/python.exe',
                 'licenses/RenoDX-MIT.txt']

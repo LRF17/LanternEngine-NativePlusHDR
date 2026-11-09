@@ -2,6 +2,7 @@
 #include "video_core/renderer_vulkan/vk_volumetric_light.h"
 
 #include <algorithm>
+#include <utility>
 #include <array>
 #include <bit>
 #include <cmath>
@@ -31,11 +32,21 @@ constexpr auto Compute = vk::PipelineStageFlagBits2::eComputeShader;
 constexpr vk::ImageSubresourceRange ColorRange{vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1};
 constexpr u32 FogLightsAt = 256, FogMaxLights = 64;
 constexpr u32 FogBytes = FogLightsAt + FogMaxLights * 64;
+static_assert(FogBytes <= 65536, "vkCmdUpdateBuffer takes at most 64 KiB");
 struct Params {
     u32 offsets, steps;
     float reach, density, strength, anisotropy, bias, tilt;
 };
 static_assert(sizeof(Params) == 32);
+struct TintParams {
+    u32 offset_bytes, record_count;
+    float blend;
+    u32 skip_fallback;
+};
+static_assert(sizeof(TintParams) == 16);
+// The fog's color moves 95% of the way to a new value in about 1.5 s (three time constants). After
+// a longer gap than this (the first frame, a load) there is no earlier color worth fading from.
+constexpr float TintFadeConstant = 0.5f, TintSnapAfter = 1.0f;
 
 void Before(vk::CommandBuffer cmd) {
     const vk::MemoryBarrier2 b{
@@ -82,7 +93,7 @@ bool VolumetricLight::Ready() {
                        eStorageImage, eStorageImage, eStorageImage},
                       VOLUMETRIC_LIGHT_REPAIR_COMP, sizeof(Params), "Volumetric repair") &&
            CreatePass(tint, {eStorageBuffer, eStorageBuffer},
-                      VOLUMETRIC_LIGHT_TINT_COMP, 2 * sizeof(u32), "Volumetric tint") &&
+                      VOLUMETRIC_LIGHT_TINT_COMP, sizeof(TintParams), "Volumetric tint") &&
            CreatePass(filter, {eCombinedImageSampler, eStorageImage},
                       VOLUMETRIC_LIGHT_FILTER_COMP, sizeof(u32), "Volumetric filter") &&
            CreatePass(composite,
@@ -347,8 +358,19 @@ void VolumetricLight::Tint(const vk::DescriptorBufferInfo& lighting, u32 offset_
         std::printf("Volumetric lighting: unexpected directional lighting table; off\n");
         return;
     }
-    const std::array<u32, 2> params{
-        offset_bytes, u32(std::min<vk::DeviceSize>((lighting.range - offset_bytes) / RecordBytes, 256))};
+    // BB_VOLUMETRIC_STEADY=0 (More > Engine > Steady sunlight color): the color as it was before the
+    // fallback record was skipped and the fade added.
+    static const bool steady = [] {
+        const char* env = std::getenv("BB_VOLUMETRIC_STEADY");
+        return !(env && env[0] == '0');
+    }();
+    const auto now = std::chrono::steady_clock::now();
+    const float seconds = std::chrono::duration<float>(now - tint_time).count();
+    tint_time = now;
+    const TintParams params{
+        offset_bytes, u32(std::min<vk::DeviceSize>((lighting.range - offset_bytes) / RecordBytes, 256)),
+        steady && seconds <= TintSnapAfter ? 1.0f - std::exp(-seconds / TintFadeConstant) : 1.0f,
+        steady ? 1u : 0u};
     scheduler.EndRendering();
     const vk::DescriptorBufferInfo state{tint_state->Handle(), 0, 16};
     EffectPass::Mark(8, "volumetric tint");
@@ -365,8 +387,7 @@ void VolumetricLight::Tint(const vk::DescriptorBufferInfo& lighting, u32 offset_
             }};
             cmd.bindPipeline(vk::PipelineBindPoint::eCompute, pipeline);
             cmd.pushDescriptorSetKHR(vk::PipelineBindPoint::eCompute, layout, 0, writes);
-            cmd.pushConstants(layout, vk::ShaderStageFlagBits::eCompute, 0, sizeof(params),
-                              params.data());
+            cmd.pushConstants(layout, vk::ShaderStageFlagBits::eCompute, 0, sizeof(params), &params);
             cmd.dispatch(1, 1, 1);
             After(cmd);
         });
@@ -374,7 +395,8 @@ void VolumetricLight::Tint(const vk::DescriptorBufferInfo& lighting, u32 offset_
     if (!tint_reported) {
         tint_reported = true;
         std::printf("Volumetric lighting: resolved primary diffuse RGB, %u region records\n",
-                    params[1]);
+                    params.record_count);
+        std::printf("Volumetric lighting: steady sunlight color %s\n", steady ? "on" : "off");
     }
 }
 
@@ -383,18 +405,10 @@ void VolumetricLight::AddPointLights(const u32* constants, const u32* lights, u3
         !BbSettings::Get().effects[BbSettings::EffectPointFog].load(std::memory_order_relaxed)) {
         return;
     }
-    if (fog_lights.empty()) {
+    if (fog_lights.Empty()) {
         std::copy_n(constants, fog_matrix.size(), fog_matrix.begin());
     }
-    for (u32 i = 0; i < count && fog_lights.size() < FogMaxLights; ++i) {
-        std::array<u32, 16> light;
-        std::copy_n(lights + i * 16, light.size(), light.begin());
-        if (std::ranges::none_of(fog_lights, [&](const auto& known) {
-                return std::equal(known.begin(), known.begin() + 4, light.begin());
-            })) {
-            fog_lights.push_back(light);
-        }
-    }
+    fog_lights.Add(lights, count);
 }
 
 void VolumetricLight::RecordLampFog(std::span<const std::array<u32, 16>> lights, u32 w, u32 h) {
@@ -460,7 +474,7 @@ void VolumetricLight::Composite(VideoCore::ImageId fallback, const char* where) 
     const auto color_id = scene ? scene : fallback;
     const auto uid = scene ? scene_uid : (fallback ? texture_cache.GetImage(fallback).image_uid : 0);
     const bool has_tint = tinted;
-    const auto lamp_lights = fog_lights;
+    const auto seen_lights = fog_lights.Lights();
     Reset();
     if (!has_result || !Enabled() || !color_id) return;
     if (!has_tint) {
@@ -517,7 +531,36 @@ void VolumetricLight::Composite(VideoCore::ImageId fallback, const char* where) 
         std::printf("Volumetric lighting: scene and shadow viewport sizes differ; off\n");
         return;
     }
-    RecordLampFog(lamp_lights, w, h);
+    // bbport: BB_POINT_FOG_STEADY=0 draws the original fog (the first lights the game lists); on
+    // unless 0. Read once: the launcher passes it at game start, like the engine's other switches.
+    static const bool steady_fog = [] {
+        const char* env = std::getenv("BB_POINT_FOG_STEADY");
+        return !(env && env[0] == '0');
+    }();
+    if (!BbSettings::Get().effects[BbSettings::EffectPointFog].load(std::memory_order_relaxed)) {
+        fog_memory.Clear();
+    } else if (!steady_fog) {
+        fog_memory.Clear();
+        if (!std::exchange(fog_mode_logged, true)) {
+            std::printf("Lamp fog: steady fog off (draws the first %u lights the game lists)\n",
+                        u32(LampFog::AsListedLimit));
+        }
+        RecordLampFog(LampFog::AsListed(seen_lights), w, h);
+    } else {
+        const auto now = std::chrono::steady_clock::now();
+        // Bounded: a hitch or a menu without the scene should not count as the lights being gone.
+        const float seconds = std::clamp(
+            std::chrono::duration<float>(now - fog_memory_time).count(), 0.0f, 0.1f);
+        fog_memory_time = now;
+        // The memory fades lights at the limit; Select is the bound for the game's list as it is,
+        // which the memory passes through without a camera.
+        const auto drawn_lights = fog_memory.Update(seen_lights, fog_camera, seconds, FogMaxLights);
+        const auto lamp_lights = LampFog::Select(drawn_lights, FogMaxLights);
+        if (!std::exchange(fog_mode_logged, true)) {
+            std::printf("Lamp fog: steady fog on (draws up to %u lights)\n", FogMaxLights);
+        }
+        RecordLampFog(lamp_lights.lights, w, h);
+    }
     const vk::DescriptorImageInfo raw{*sampler, *fog_view, vk::ImageLayout::eGeneral};
     const vk::DescriptorImageInfo filtered{{}, *filtered_view, vk::ImageLayout::eGeneral};
     EffectPass::Mark(10, "volumetric filter");

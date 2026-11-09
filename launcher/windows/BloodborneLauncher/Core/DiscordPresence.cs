@@ -17,7 +17,7 @@ namespace BloodborneLauncher.Core
     public static class DiscordPresence
     {
         private const string LanternApp = "1561836572364505089";
-        private const string LogoLink = "https://lantern-engine.netlify.app/lantern-logo.png";
+        private const string LogoLink = "https://awakenchan.github.io/LanternEngine/lantern-logo.png";
         /// <summary>A second app named "Bloodborne"; empty until it is registered.</summary>
         private const string BloodborneApp = "";
 
@@ -118,7 +118,7 @@ namespace BloodborneLauncher.Core
             if (look.Buttons.Count > 0)
             {
                 var buttons = new JsonArray();
-                foreach (var (label, url) in look.Buttons) buttons.Add(new JsonObject { ["label"] = label, ["url"] = url });
+                foreach (var (label, url) in look.Buttons) buttons.Add((JsonNode)new JsonObject { ["label"] = label, ["url"] = url });
                 activity["buttons"] = buttons;
             }
             return activity;

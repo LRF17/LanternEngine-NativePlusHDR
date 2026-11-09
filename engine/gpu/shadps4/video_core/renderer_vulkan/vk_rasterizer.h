@@ -19,6 +19,7 @@
 #include "video_core/renderer_vulkan/vk_rt_shadow.h"
 #include "video_core/renderer_vulkan/vk_point_shadow.h"
 #include "video_core/renderer_vulkan/vk_ssgi.h"
+#include "video_core/renderer_vulkan/vk_ao_spatial.h"
 #include "video_core/renderer_vulkan/vk_ssr_temporal.h"
 #include "video_core/renderer_vulkan/vk_volumetric_light.h"
 #include "video_core/renderer_vulkan/vk_constant_ring.h"
@@ -404,6 +405,7 @@ private:
                           u32 index_offset, u32 first_vertex) const;
     void EffectsAfterDraw(const AmdGpu::Regs& regs, const GraphicsPipeline* pipeline, bool is_indexed, u32 num_indices,
                           u32 num_instances, u32 first_vertex);
+    void HqAoAfterDraw(const GraphicsPipeline* pipeline, const RenderState& state);
     void UpdateDepthStencilState() const;
     void UpdatePrimitiveState(bool is_indexed) const;
     void UpdateRasterizationState() const;
@@ -414,6 +416,16 @@ private:
     /// Everything of a direct draw after the pipeline selection (GPU thread or stage B).
     void DrawRecord(const GraphicsPipeline* pipeline, const PreparedDraw* used_prepared,
                     bool is_indexed, u32 index_offset);
+    struct GxRegister {
+        u16 index;
+        u32 value;
+    };
+    std::array<GxRegister, 160> gx_registers{};
+    u32 num_gx_registers = 0;
+    const void* gx_state = nullptr;
+    void ApplyGxRecord(const GraphicsPipeline* pipeline, const PreparedDraw*& used_prepared, u64 gx_record,
+                       bool is_indexed_draw);
+    static void SwapGxRegisters(AmdGpu::Regs& regs, GxRegister* list, u32 count);
     static bool DrawPipeWanted();
     bool UseDrawPipe() const;
     bool OnStageA() const;
@@ -454,6 +466,35 @@ private:
     void CollectRingBindings(const Shader::Info& stage, const PreparedDraw* prepared,
                              boost::container::static_vector<RingBinding, Shader::NUM_BUFFERS>& out);
     void PrintPipeStats();
+    struct RunCensus {
+        enum Cut : u32 {
+            CutTask,
+            CutDispatch,
+            CutPacket,
+            CutPass,
+            CutUpload,
+            CutTexture,
+            CutTarget,
+            CutWrite,
+            CutOther,
+            CutCount,
+        };
+        std::atomic<u64> draws{0}, clean{0}, streamed{0}, clean_cycles{0}, dirty_cycles{0};
+        std::atomic<u64> runs{0}, long_runs{0}, long_draws{0}, long_cycles{0};
+        std::array<std::atomic<u64>, 4> lengths{};
+        std::array<std::atomic<u64>, CutCount> cuts{};
+        u32 run = 0;
+        u64 run_cycles = 0;
+    };
+    struct CensusMark {
+        u64 passes, uploads, written, streamed, textures, targets, start;
+    };
+    static bool CensusWanted();
+    CensusMark CensusBegin();
+    void CensusDraw(const CensusMark& mark);
+    void CensusEndRun(u32 cut);
+    RunCensus census;
+    bool census_other = false;
     /// The registers of the draw being recorded: stage B's copy there, else Liverpool's.
     const AmdGpu::Regs& Regs() const;
     AmdGpu::CbDbExtent CbExtent(u32 index) const;
@@ -584,6 +625,7 @@ private:
     std::unique_ptr<CameraMotion> camera_motion; // bbport: motion vectors (docs/upscaler.md)
     std::unique_ptr<SceneTargets> scene_targets;
     std::unique_ptr<ScreenSpaceGI> ssgi;
+    std::unique_ptr<SpatialAo> spatial_ao; // bbport: graphics_ao_quality=1 (High GTAO)
     std::unique_ptr<SsrTemporal> ssr_temporal;
     std::unique_ptr<RtShadow> rt_shadow;
     std::unique_ptr<ContactShadow> contact_shadow;
@@ -855,6 +897,17 @@ private:
     std::array<u64, 1u << 16> waited_on{};
     u64 newest_pending_write = 0;
     PendingReads pending_reads;
+    struct ConstantCopy {
+        VAddr address;
+        u32 size;
+        u32 version;
+        u64 at;
+        u64 offset;
+        u64 hash;
+    };
+    std::array<ConstantCopy, 4096> constant_copies{};
+    std::vector<u64> gpu_written_granules = std::vector<u64>(1u << 14);
+    u64 constant_checks = 0;
     PendingReads pending_write_table; ///< the same per granule for GPU writes queued (NotePendingGpuWrite)
     u64 untracked_reads_packet = 0; ///< newest packet reading guest memory it does not list
     u64 constram_waits_skipped = 0; ///< statistics: CPU writes that did not have to wait
@@ -876,6 +929,23 @@ private:
     u32 num_ring_stages = 0;
     /// bbport: the vertex stream V#s of the packet being recorded (stage B; empty elsewhere).
     std::span<const AmdGpu::Buffer> packet_vsharps;
+    std::span<const u64> packet_vkeys;
+    std::span<const u64> packet_view_keys;
+    u64 packet_index_key = 0;
+    struct ObjectBind {
+        u64 key;
+        VAddr base;
+        u64 size;
+        u64 generation;
+        const VideoCore::Buffer* buffer;
+        u64 offset;
+    };
+    std::array<ObjectBind, 4096> object_binds{};
+    u64 object_bind_checks = 0;
+    std::pair<const VideoCore::Buffer*, u64> BindByObject(u64 key, VAddr base, u64 size);
+    std::pair<const VideoCore::Buffer*, u64> BindVertexRange(u64 key, VAddr base, u64 size);
+    static constexpr u64 RangeBindKey = 0x52414e4745ull;
+    u64 range_binds = 0, range_hits = 0, range_checked = 0, range_differ = 0;
     const RingBinding* FindRingBinding(const Shader::Info& stage, u32 index) const {
         for (u32 i = 0; i < num_ring_stages; ++i) {
             if (ring_stages[i].info == &stage) {
@@ -933,6 +1003,7 @@ private:
     std::atomic<u64> signals_published_upto{0};
     std::atomic<bool> signal_flush_requested{false};
     std::jthread gpu_signal_thread;
+    bool gpu_signal_started = false;
     void SubmitForSignalsNow();
     /// steady_clock nanoseconds of the last submission (written by both pipeline stages).
     std::atomic<s64> last_flush_ns{0};

@@ -79,6 +79,15 @@ using (var packed = new MemoryStream())
 var odd = Looks.Parse(Good.Replace("\"x\"", "\"a\\u202Eb\\u0007c" + new string('n', 200) + "\""));
 Require(odd.Name.Length <= 48 && !odd.Name.Contains('‮') && !odd.Name.Contains('\a'), "A name was not cleaned");
 
+var steady = EngineSwitches.All.SingleOrDefault(s => s.Env == "BB_VOLUMETRIC_STEADY");
+Require(steady != null, "The steady sunlight color switch is missing from the Engine page");
+Require(steady!.Group == EngineSwitches.Graphics, "The steady sunlight color switch is not in the Graphics group");
+Require(steady.Kind == SwitchKind.Toggle && steady.Default == steady.On, "The steady sunlight color switch is not on by default");
+Require(!Looks.Knobs.Any(k => k.Key.Contains("steady", StringComparison.OrdinalIgnoreCase) || k.Key == steady.Env),
+    "A look knob uses the steady sunlight color switch");
+Require(!Choices.Effects.Any(e => e.Key.Contains("steady", StringComparison.OrdinalIgnoreCase) || e.Key == steady.Env),
+    "An effect row uses the steady sunlight color switch");
+
 var ini = new IniFile();
 ini.Set("graphics_bloom", "2");
 ini.Set("upscaler", "dlss");
@@ -86,5 +95,12 @@ Require(!Looks.IsCurrent(Looks.Presets[0], ini), "The original look does not rea
 var mine = Looks.FromCurrent(ini, "Now", "");
 Require(mine.Values.Count == 1 && mine.Values["graphics_bloom"] == "2", "FromCurrent took the wrong values");
 Require(Looks.IsCurrent(mine, ini), "A look of the current values reads as current");
+
+// Steady fog is a choice between two kinds of fog, not part of a look; it is an Engine > Graphics switch
+// (BB_POINT_FOG_STEADY) and starts on, as the engine's default does.
+var steadyFog = EngineSwitches.All.SingleOrDefault(e => e.Env == "BB_POINT_FOG_STEADY");
+Require(steadyFog != null, "Steady lamp fog is not an Engine switch");
+Require(steadyFog!.Group == EngineSwitches.Graphics, "Steady lamp fog is not in the Engine Graphics group");
+Require(steadyFog.Default == steadyFog.On, "Steady lamp fog does not start on");
 
 Console.WriteLine("PASS looks: " + Looks.Knobs.Length + " knobs, " + Looks.Presets.Count + " presets");

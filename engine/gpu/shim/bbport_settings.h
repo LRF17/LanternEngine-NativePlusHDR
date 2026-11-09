@@ -77,6 +77,9 @@ inline constexpr int EffectPointFog = 17;
 inline constexpr int EffectPointShadows = 18;
 inline constexpr int EffectRayTracing = 19;
 inline constexpr bool EffectIsLive(int effect) { return effect >= EffectContactShadows; }
+inline constexpr bool EffectChangeNeedsRestart(int effect, bool now, bool at_start) {
+    return now != at_start && (!EffectIsLive(effect) || (effect == EffectRayTracing && now));
+}
 inline constexpr int OutputWidths[] = {1280,1600,1920,2560,3840,2560,3440,3840,3840,5120,5120,7680,0,0};
 inline constexpr int OutputHeights[] = {720,900,1080,1440,2160,1080,1440,1600,1080,1440,2160,2160,0,0};
 inline constexpr int OutputCount = 14;
@@ -182,6 +185,7 @@ struct Values {
     std::atomic<float> graphics_ao_strength{1},graphics_shadow_scale{1},graphics_bloom{1},graphics_saturation{1};
     std::atomic<float> graphics_gi_strength{6},graphics_volumetric_intensity{1},graphics_point_fog_intensity{1},graphics_ssr_intensity{1};
     std::atomic<int> graphics_shadow_resolution{0},graphics_local_shadow_resolution{0},graphics_motion_blur_quality{0};
+    std::atomic<int> graphics_ao_quality{0}; // 0 regular GTAO, 1 high (full-res bitmask GTAO)
     std::atomic<int> look_choice{0};
     std::atomic<float> graphics_fog{1},graphics_brightness{1},graphics_contrast{1},graphics_hue{0};
     std::atomic<float> camera_fov_scale{1.0f}, camera_distance_scale{1.0f}, camera_height_scale{1.0f};
@@ -226,6 +230,7 @@ struct Values {
     int startup_upscaler = UpscalerFsr3;
     bool startup_object_motion = true;
     int startup_motion_blur_quality = 0;
+    int startup_ao_quality = 0;
     int startup_shadow_resolution = 0;
     int startup_local_shadow_resolution = 0;
     bool startup_effects[EffectCount]{};

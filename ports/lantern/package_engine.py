@@ -15,8 +15,9 @@ queue = []
 # bb-start.exe: the native start (boot image, mods, patches, then bb-probe), as Lantern 9.8 runs.
 # bb-shader-lab.exe: bb-start's shader catalog seeding and cache recompiles (start/main.cpp).
 # bb-ui-4k.exe: the launcher's 4K menus (UiUpscale.cs), since Lantern 0.9.39.
+# bb-isa-scan.exe: the start's MOVBE/BMI1/LZCNT scan for older CPUs, since Lantern 0.9.40.
 for name in ['bb-probe.exe', 'bb-start.exe', 'bb-gpu-capabilities.exe', 'bb-engine-assets.exe',
-             'bb-shader-lab.exe', 'bb-ui-4k.exe']:
+             'bb-shader-lab.exe', 'bb-ui-4k.exe', 'bb-isa-scan.exe']:
     src = engine / 'out' / name
     if not src.is_file():
         raise RuntimeError(f'Missing build output: {src}')

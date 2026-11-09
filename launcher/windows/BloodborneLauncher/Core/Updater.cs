@@ -28,7 +28,7 @@ namespace BloodborneLauncher.Core
 
         /// <summary>The engine build this launcher is made for (package.json "engine"). A release whose
         /// engine changed needs a new one: with the same, the updater replaces the launcher alone.</summary>
-        public const string EngineId = "lantern-fps95-nativeplus-v7";
+        public const string EngineId = "lantern-fps95-nativeplus-v8";
 
         public const string ExeName = "Lantern Engine.exe";
         /// <summary>The launcher's name before 0.9.34 beta 8 (now a forwarder to ExeName).</summary>
@@ -144,7 +144,7 @@ namespace BloodborneLauncher.Core
         /// Stable: GitHub's latest release. Beta: the newest of all releases, pre-releases included.</summary>
         public static async Task<Release?> LatestAsync(bool beta = false)
         {
-            using var http = Client(TimeSpan.FromSeconds(10));
+            using var http = Client(TimeSpan.FromSeconds(20));
             using var response = await http.GetAsync(beta
                 ? $"https://api.github.com/repos/{Repository}/releases?per_page=30"
                 : $"https://api.github.com/repos/{Repository}/releases/latest");
@@ -532,8 +532,14 @@ namespace BloodborneLauncher.Core
         {
             try
             {
-                if (Environment.ProcessPath is { } self && File.Exists(self + ".old"))
-                    File.Delete(self + ".old");
+                if (Environment.ProcessPath is { } self)
+                {
+                    if (File.Exists(self + ".old"))
+                        File.Delete(self + ".old");
+                    var oldName = Path.Combine(Path.GetDirectoryName(self)!, OldExeName + ".old");
+                    if (File.Exists(oldName))
+                        File.Delete(oldName);
+                }
             }
             catch
             {
