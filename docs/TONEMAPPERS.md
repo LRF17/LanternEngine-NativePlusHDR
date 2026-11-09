@@ -1,8 +1,8 @@
-# Native+ tone mappers (0.9.39.1)
+# Native+ tone mappers (0.9.40.1)
 
 Native+ has two tone mappers: **Vanilla+** (the default) and **PsychoV**, with its Vanilla+ Blend. This
 page says how each is built, why, what was measured (on a model with RenoDX's own code, and in the game), and what
-was tried and not kept. The code is the one the workflow builds: Lantern 0.9.39 beta 30 (`4ab0b71`) with
+was tried and not kept. The code is the one the workflow builds: Lantern 0.9.40 (`ea34b45`) with
 `ports/lantern/nativeplus-engine.patch`; the references are RenoDX `b6b32f4` (`test30.hlsl`,
 `test17.hlsl`, `DICE.hlsl`, `color/correct.hlsl`, the Cyberpunk 2077, Order of the Sinking Star,
 Starfield and FromSoftware Engine mods, `.agents/skills/handle-sdr-tonemap-lut`) and souperman9's

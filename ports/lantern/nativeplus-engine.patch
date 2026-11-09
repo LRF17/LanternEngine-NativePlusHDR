@@ -1458,7 +1458,7 @@ index 0000000..0ebdbe1
 +4. Send `logs/last_session.log`.
 diff --git a/docs/nativeplus.md b/docs/nativeplus.md
 new file mode 100644
-index 0000000..9e2328a
+index 0000000..eb42ebe
 --- /dev/null
 +++ b/docs/nativeplus.md
 @@ -0,0 +1,135 @@
@@ -1587,7 +1587,7 @@ index 0000000..9e2328a
 +  highlights the HUD and the scene blend. RenoDX's mods show the same.
 +- AMD with FSR 4: a thin light line on the right and bottom edges was seen before Native+ went
 +  through Lantern's edge clamp; if it shows again, Sub-pixel jitter off removes it.
-+- ReShade add-ons ReLimiter and Display Commander crash 0.9.39 at startup (in every mode).
++- ReShade add-ons ReLimiter and Display Commander crash Lantern 0.9.39 and later at startup (in every mode).
 +  ReShade presets made for SDR give wrong colors on the HDR image.
 +
 +## Credits
