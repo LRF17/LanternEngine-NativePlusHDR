@@ -19,6 +19,10 @@ if ! { command -v pkg-config >/dev/null && pkg-config --exists vulkan sdl3 && co
     fi
     echo 'Need pkg-config with vulkan and sdl3, cmake and ninja (see shell.nix).' >&2; exit 1
 fi
+if ! command -v cargo >/dev/null 2>&1; then
+    echo 'Install the Rust toolchain (cargo) to build the MOVBE/BMI1/LZCNT scanner.' >&2
+    exit 1
+fi
 read -r -a includes <<< "$(pkg-config --cflags vulkan sdl3)"
 read -r -a libraries <<< "$(pkg-config --libs vulkan sdl3)"
 # Windows: MSYS2 CLANG64 shell (README "Windows": clang, libc++ and lld, whose threads and locks
@@ -36,6 +40,12 @@ if [[ -n $windows ]]; then
     threads=()
     libraries=("${libraries[@]/-mwindows/-mconsole}")
     cstd=(-std=gnu11 -D_FILE_OFFSET_BITS=64 -D_WIN32_WINNT=0x0A00)
+fi
+cargo build --manifest-path tools/isa-scan/Cargo.toml --release
+if [[ -n $windows ]]; then
+    install -m755 tools/isa-scan/target/release/bb-isa-scan.exe out/bb-isa-scan.exe
+else
+    install -m755 tools/isa-scan/target/release/bb-isa-scan out/bb-isa-scan
 fi
 # BB_JOBS=N: at most N compile and link-time optimization jobs (less memory, e.g. while the
 # game runs).
@@ -89,11 +99,11 @@ if [[ ! -f out/gpu/build.ninja || $(cat out/gpu/bb-configure.txt 2>/dev/null) !=
 fi
 echo "GPU library: PGO $pgo, LTO ${BB_LTO:-ON}, march ${BB_MARCH:-default}"
 # A failed GPU build must stop here: an older libbbgpu.so would otherwise be used silently.
-if ! ninja -C out/gpu ${BB_JOBS:+-j "$BB_JOBS"} bbgpu bb-engine-assets bb-shader-lab > out/gpu-build.log 2>&1; then
+if ! ninja -C out/gpu ${BB_JOBS:+-j "$BB_JOBS"} bbgpu bb-engine-assets bb-ui-4k bb-shader-lab > out/gpu-build.log 2>&1; then
     grep -v '^\[' out/gpu-build.log | tail -40 >&2
     echo 'GPU library build failed (full log: out/gpu-build.log)' >&2; exit 1
 fi
-cp -f out/gpu/bb-engine-assets* out/
+cp -f out/gpu/bb-engine-assets* out/gpu/bb-ui-4k* out/
 # The cache recompile after a compiler change (start/main.cpp RecompileGpuCache).
 cp -f out/gpu/bb-shader-lab* out/ 2>/dev/null || true
 # The GPU cache's identity (start/main.cpp ResetStaleGpuCache): a hash of the sources that decide
@@ -120,12 +130,14 @@ gpu_cache_sources | grep -v -E 'vk_(graphics|compute)_pipeline\.cpp$|vk_pipeline
 gpu_cache_sources | xargs cat | sha256sum | cut -c1-16 > out/gpu-cache.legacy.id
 # $ORIGIN/gpu: packaged copies keep the library next to the binary without patching it.
 gpu=(-Lout/gpu -lbbgpu -Wl,-rpath,'$ORIGIN/gpu' -Wl,-rpath,"$PWD/out/gpu" -rdynamic)
-runtime=(src/runtime*.c)
+runtime=(src/host.c src/wait_stats.c src/blocked.c src/sys/*.c)
+sys_tests=(tests/sys_test_host.c src/sys/*.c)
 link=(-no-pie)
 if [[ -n $windows ]]; then
     # out/gpu/bbgpu_link.txt (gpu/CMakeLists.txt): libbbgpu.a and its dependencies, one per line.
     mapfile -t gpu < out/gpu/bbgpu_link.txt
     runtime+=(src/win32_*.c)
+    sys_tests+=(src/win32_*.c)
     # The static library's link-time optimization (ThinLTO in lld) runs here; on Linux it runs in
     # the .so link.
     # The ThinLTO cache keeps each module's optimized code: a rebuild after a small change
@@ -153,12 +165,13 @@ if [[ -n $windows ]]; then
         [[ ! -f $dependency ]] || gpu_inputs+=("$dependency")
     done
 fi
-if [[ -n $windows && -f out/bb-probe.exe && -f out/bb-gpu-capabilities.exe &&
+if [[ -n $windows && -f out/bb-probe.exe && -f out/bb-gpu-capabilities.exe && -f out/isa_emulate.o &&
       -z $(find src gpu/bbgpu.h "${gpu_inputs[@]}" out/libatrac9.a build.sh \
                tools/gpu_capabilities.c -newer out/bb-probe.exe -print -quit) ]]; then
     echo "Up to date: $PWD/out/bb-probe.exe"
 else
-"$CC" "${cstd[@]}" -O2 -g -Wall -Wextra -Werror "${threads[@]}" "${includes[@]}" -I. -Isrc src/probe.c "${runtime[@]}" src/vulkan_smoke.c out/libatrac9.a -lm "${gpu[@]}" "${libraries[@]}" "${link[@]}" -o out/bb-probe
+"$CC" "${cstd[@]}" -O2 -g -Wall -Wextra -Werror "${threads[@]}" -mgeneral-regs-only "${includes[@]}" -I. -Isrc -c src/isa_emulate.c -o out/isa_emulate.o
+"$CC" "${cstd[@]}" -O2 -g -Wall -Wextra -Werror "${threads[@]}" "${includes[@]}" -I. -Isrc src/probe.c src/isa_rewrite.c out/isa_emulate.o "${runtime[@]}" src/vulkan_smoke.c out/libatrac9.a -lm "${gpu[@]}" "${libraries[@]}" "${link[@]}" -o out/bb-probe
 echo "Built $PWD/out/bb-probe"
 # GPU and controller inventory; keep the Windows C dialect and include SDL headers.
 "$CC" "${cstd[@]}" -O2 -Wall -Wextra -Werror "${includes[@]}" tools/gpu_capabilities.c "${libraries[@]}" -o out/bb-gpu-capabilities
@@ -170,15 +183,54 @@ if [[ -n $windows ]] && [[ ! -f out/bb-start.exe || -n $(find start src/lantern.
         -municode -static start/*.cpp out/lantern.res -lz -lexpat -lbcrypt -o out/bb-start.exe
     echo "Built $PWD/out/bb-start.exe"
 fi
+# The game is launched outside MSYS2, so clang64/bin is not on its PATH.
+# Bundle the transitive CLANG64 runtime DLLs beside every Windows executable in out/
+# (notably libc++.dll, which bb-probe.exe needs through the statically linked GPU library).
+if [[ -n $windows ]]; then
+    for executable in out/bb-isa-scan.exe out/bb-probe.exe out/bb-gpu-capabilities.exe \
+                      out/bb-engine-assets.exe out/bb-ui-4k.exe out/bb-shader-lab.exe; do
+        [[ -f $executable ]] || continue
+        while IFS= read -r dll; do
+            [[ ! -f $dll ]] || cp -f "$dll" out/
+        done < <(ldd "$executable" 2>/dev/null | awk '$3 ~ /clang64\/bin\/.*[.]dll$/ {print $3}')
+    done
+fi
+
 if [[ ${1:-} == --test ]]; then
-    "$CC" -std=c11 -O2 -g -Wall -Wextra -Werror -pthread "${includes[@]}" -I. -Isrc tests/test_pad.c "${libraries[@]}" -o out/pad-test
+    test_link=()
+    if [[ -n $windows ]]; then test_link=(-lws2_32 -lwinpthread -Wl,--disable-dynamicbase,--disable-high-entropy-va); fi
+    "$CC" "${cstd[@]}" -O2 -g -Wall -Wextra -Werror "${threads[@]}" "${includes[@]}" -I. -Isrc tests/test_pad.c "${sys_tests[@]}" out/libatrac9.a -lm "${libraries[@]}" "${test_link[@]}" -o out/pad-test
     out/pad-test
-    "$CC" -std=gnu11 -O2 -g -Wall -Wextra -Werror -pthread "${includes[@]}" -I. -Isrc tests/test_runtime.c "${runtime[@]}" out/libatrac9.a -lm "${gpu[@]}" "${libraries[@]}" -o out/runtime-test
+    "$CC" "${cstd[@]}" -O2 -g -Wall -Wextra -Werror "${threads[@]}" "${includes[@]}" -I. -Isrc tests/test_runtime.c src/host.c src/wait_stats.c src/blocked.c "${sys_tests[@]}" out/libatrac9.a -lm "${libraries[@]}" "${test_link[@]}" -o out/runtime-test
     out/runtime-test
-    "$CC" -std=c11 -O2 -g -Wall -Wextra -Werror -pthread -Isrc tests/test_file_mods.c -o out/file-mods-test
-    out/file-mods-test
-    "$CC" -std=gnu11 -O2 -g -Wall -Wextra -Werror -pthread "${includes[@]}" -I. -Isrc tests/test_sema.c "${runtime[@]}" out/libatrac9.a -lm "${gpu[@]}" "${libraries[@]}" -o out/sema-test
+    "$CC" "${cstd[@]}" -O2 -g -Wall -Wextra -Werror "${threads[@]}" "${includes[@]}" -I. -Isrc tests/test_sema.c src/host.c src/wait_stats.c src/blocked.c "${sys_tests[@]}" out/libatrac9.a -lm "${libraries[@]}" "${test_link[@]}" -o out/sema-test
     out/sema-test
-    "$CC" -std=c11 -D_GNU_SOURCE -O2 -g -Wall -Wextra -Werror -I. -Isrc tests/test_content.c src/runtime_content.c -o out/content-test
+    "$CC" "${cstd[@]}" -D_GNU_SOURCE -O2 -g -Wall -Wextra -Werror "${threads[@]}" "${includes[@]}" -I. -Isrc tests/test_content.c "${sys_tests[@]}" out/libatrac9.a -lm "${libraries[@]}" "${test_link[@]}" -o out/content-test
     out/content-test
+    "$CC" "${cstd[@]}" -O2 -g -Wall -Wextra -Werror "${threads[@]}" "${includes[@]}" -I. -Isrc tests/test_sys_rtc.c "${sys_tests[@]}" out/libatrac9.a -lm "${libraries[@]}" "${test_link[@]}" -o out/sys-rtc-test
+    out/sys-rtc-test
+    "${CXX:-clang++}" -std=c++20 -O1 -Wall -Wextra -Wno-deprecated-declarations -I. tests/test_toml_patch.cpp start/toml_patch.cpp start/xml.cpp start/common.cpp -lexpat -lz $([[ -n $windows ]] && echo -lbcrypt) -o out/toml-patch-test
+    out/toml-patch-test
+    "${CXX:-clang++}" -std=c++20 -O1 -Wall -Wextra -Werror -I. tests/test_gx_records.cpp gpu/shim/engine/gx_bindings.cpp -o out/gx-records-test
+    out/gx-records-test
+    "${CXX:-clang++}" -std=c++20 -O1 -Wall -Wextra -Werror -I. tests/test_draw_tokens.cpp -o out/draw-tokens-test
+    out/draw-tokens-test
+    "${CXX:-clang++}" -std=c++20 -O1 -Wall -Wextra -Werror "${threads[@]}" -I. tests/test_scene_proxy_release.cpp "${test_link[@]}" -o out/scene-proxy-release-test
+    out/scene-proxy-release-test
+    "$CC" "${cstd[@]}" -O2 -g -Wall -Wextra -Werror "${threads[@]}" "${includes[@]}" -I. -Isrc tests/test_sys_mutex.c "${sys_tests[@]}" out/libatrac9.a -lm "${libraries[@]}" "${test_link[@]}" -o out/sys-mutex-test
+    out/sys-mutex-test
+    "$CC" "${cstd[@]}" -O2 -g -Wall -Wextra -Werror "${threads[@]}" "${includes[@]}" -I. -Isrc tests/test_sys_thread.c "${sys_tests[@]}" out/libatrac9.a -lm "${libraries[@]}" "${test_link[@]}" -o out/sys-thread-test
+    out/sys-thread-test
+    "$CC" "${cstd[@]}" -O2 -g -Wall -Wextra -Werror "${threads[@]}" "${includes[@]}" -I. -Isrc tests/test_sys_clock.c "${sys_tests[@]}" out/libatrac9.a -lm "${libraries[@]}" "${test_link[@]}" -o out/sys-clock-test
+    out/sys-clock-test
+    "$CC" "${cstd[@]}" -O2 -g -Wall -Wextra -Werror "${threads[@]}" "${includes[@]}" -I. -Isrc tests/test_sys_file.c "${sys_tests[@]}" out/libatrac9.a -lm "${libraries[@]}" "${test_link[@]}" -o out/sys-file-test
+    out/sys-file-test
+    "$CC" "${cstd[@]}" -O2 -g -Wall -Wextra -Werror "${threads[@]}" "${includes[@]}" -I. -Isrc tests/test_game_language.c "${sys_tests[@]}" out/libatrac9.a -lm "${libraries[@]}" "${test_link[@]}" -o out/game-language-test
+    out/game-language-test
+    "$CC" "${cstd[@]}" -O2 -g -Wall -Wextra -Werror "${threads[@]}" "${includes[@]}" -I. -Isrc tests/test_sys_memory.c src/host.c "${sys_tests[@]}" out/libatrac9.a -lm "${libraries[@]}" "${test_link[@]}" -o out/sys-memory-test
+    out/sys-memory-test
+    "$CC" "${cstd[@]}" -O2 -g -Wall -Wextra -Werror "${threads[@]}" "${includes[@]}" -I. -Isrc tests/test_sys_video_out.c src/host.c "${sys_tests[@]}" out/libatrac9.a -lm "${libraries[@]}" "${test_link[@]}" -o out/sys-video-out-test
+    out/sys-video-out-test
+    "$CC" "${cstd[@]}" -O2 -g -Wall -Wextra -Werror "${threads[@]}" "${includes[@]}" -I. -Isrc tests/test_sys_av_player.c src/host.c "${sys_tests[@]}" out/libatrac9.a -lm "${libraries[@]}" "${test_link[@]}" -o out/sys-av-player-test
+    out/sys-av-player-test
 fi

@@ -16,6 +16,9 @@ constexpr int kDefaultP2p = 3658;
 constexpr int kDefaultSignTimeout = 30;
 const char* const kThdEnv[] = {"BB_NET_BACKEND", "BB_THD_SERVER", "BB_THD_AUTH", "BB_THD_TOKEN", "BB_THD_ONLINE_ID",
                                "BB_THD_RULESET"};
+const char* const kSeamlessServer = "https://185-244-28-175.sslip.io";
+const char* const kDirectPort = "38765";
+const char* const kRoomEnv[] = {"BB_ROOM_SERVER", "BB_ROOM_NAME", "BB_ROOM_PLAYER", "BB_ROOM_HOST", "BB_ROOM_HTTP_PORT", "BB_ROOM_LOCAL_PORT", "BB_ROOM_VISITOR"};
 const char* const kOnlineEnv[] = {"BB_ONLINE", "BB_SHADNET_SERVER", "BB_SHADNET_WEBAPI", "BB_SHADNET_NPID",
                                   "BB_SHADNET_PASSWORD", "BB_SHADNET_TOKEN", "BB_UPNP", "BB_P2P_PORT",
                                   "SHADPS4_HTTP_HOST_OVERRIDES_JSON", "BB_SIGN_TIMEOUT"};
@@ -142,10 +145,73 @@ bool ConfigureHuntersDream(const std::map<std::string, std::string>& settings, c
     return true;
 }
 
+bool ConfigureSeamless(const std::map<std::string, std::string>& settings, const fs::path& data) {
+    const auto get = [&](const char* key) { return Trim(Setting(settings, key).value_or("")); };
+    std::string server = get("seamless_server");
+    if (server.empty()) server = kSeamlessServer;
+    const bool host = get("seamless_role") == "host";
+    const std::string room = get(host ? "seamless_host_room" : "seamless_room");
+    std::string player;
+    for (const char c : get("seamless_player")) {
+        const auto u = std::uint8_t(c);
+        if (u >= 0x20 && u < 0x7f && c != '"' && c != '\\' &&!(c == ' ' && (player.empty() || player.back() == ' ')))
+            player.push_back(c);
+        if (player.size() == 16) break;
+    }
+    while (!player.empty() && player.back() == ' ') player.pop_back();
+    if (player.empty()) player = "Hunter";
+    if (room.empty())
+        throw Error(host ? "Open the launcher's Online page once to make your room" : "Paste the host's invite code on the launcher's Online page");
+
+    const int p2p = std::stoi(P2pPort(settings));
+    const int http = p2p < 65535 ? p2p + 1 : p2p - 1;
+    const std::string local = "http://127.0.0.1:" + std::to_string(http);
+    nlohmann::ordered_json overrides;
+    overrides["*.scej-network.jp"] = local;
+    overrides[kGameStatusOrigin] = local;
+    for (const char* host : kPlayLogHosts) overrides[host] = local;
+    const fs::path destination = WriteOverrides(data, overrides);
+    for (const char* key : kOnlineEnv) UnsetEnv(key);
+    for (const char* key : kThdEnv) UnsetEnv(key);
+    SetEnv("BB_ONLINE", "1");
+    SetEnv("BB_NET_BACKEND", "room");
+    const std::string direct_port = get("seamless_direct_port").empty() ? std::string(kDirectPort) : get("seamless_direct_port");
+    const bool direct = get("seamless_direct") == "1";
+    if (direct && !host) {
+        std::string address = get("seamless_direct_host");
+        if (address.empty()) throw Error("Paste the host's invite code, or type the host's address on the launcher's Online page");
+        if (address.find(':') == std::string::npos) address += ":" + direct_port;
+        server = "ws://" + address;
+        UnsetEnv("BB_ROOM_LOCAL_PORT");
+    } else if (direct) {
+        const int port = std::atoi(direct_port.c_str());
+        if (port < 1024 || port > 65535) throw Error("The direct room's port must be between 1024 and 65535");
+        server = "ws://127.0.0.1:" + std::to_string(port);
+        SetEnv("BB_ROOM_LOCAL_PORT", std::to_string(port));
+    } else {
+        UnsetEnv("BB_ROOM_LOCAL_PORT");
+        if (server.rfind("ws://", 0) == 0) server = kSeamlessServer;
+    }
+    SetEnv("BB_ROOM_SERVER", server);
+    SetEnv("BB_ROOM_NAME", room);
+    SetEnv("BB_ROOM_PLAYER", player);
+    SetEnv("BB_ROOM_HOST", host ? "1" : "0");
+    if (!host && !direct && get("seamless_visitor") == "1") SetEnv("BB_ROOM_VISITOR", "1");
+    else UnsetEnv("BB_ROOM_VISITOR");
+    if (host) SetEnv("BB_ROOM_PASSWORD", Env("BB_ROOM_HOST_PASSWORD", ""));
+    SetEnv("BB_ROOM_HTTP_PORT", std::to_string(http));
+    SetEnv("BB_P2P_PORT", std::to_string(p2p));
+    SetEnv("SHADPS4_HTTP_HOST_OVERRIDES_JSON", Utf8(destination));
+    SetSignTimeout(settings);
+    return true;
+}
+
 } // namespace
 
 bool ConfigureOnline(const std::map<std::string, std::string>& settings, const fs::path& data) {
     const auto get = [&](const char* key, const char* fallback = "") { return Setting(settings, key).value_or(fallback); };
+    if (get("seamless_enabled") == "1" && get("online_enabled") == "1") return ConfigureSeamless(settings, data);
+    for (const char* key : kRoomEnv) UnsetEnv(key);
     if (get("online_pool") == "huntersdream" && get("online_enabled") == "1" && get("online_connected", "1") == "1")
         return ConfigureHuntersDream(settings, data);
     const bool paused = Env("BB_ONLINE_PAUSED", "0") == "1";

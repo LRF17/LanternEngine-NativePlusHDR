@@ -1,4 +1,4 @@
-using System.IO;
+﻿using System.IO;
 
 namespace BloodborneLauncher.Core
 {
@@ -216,6 +216,8 @@ namespace BloodborneLauncher.Core
                 env["BB_GC_PRESSURE_SECONDS"] = "0";
                 env["BB_GPU_THREAD_PRIORITY"] = "0";
                 env["BB_NATIVE_SHADERS"] = "0";
+                foreach (var native in EngineSwitches.NativeSwitches)
+                    env[native] = "0";
                 env["BB_SLEEP_SPIN_US"] = "600";
                 env["BB_ASYNC_PIPELINES"] = "0";
                 env["BB_OCCLUSION"] = "0";
@@ -235,6 +237,9 @@ namespace BloodborneLauncher.Core
                 env["BB_THD_TOKEN"] = token;
                 env["BB_THD_ONLINE_ID"] = name;
             }
+            if (s.OnlinePassword is { Length: > 0 } shadnetPassword) env["BB_SHADNET_PASSWORD"] = shadnetPassword;
+            env["BB_ROOM_PASSWORD"] = s.SeamlessPassword;
+            env["BB_ROOM_HOST_PASSWORD"] = s.SeamlessHostPassword;
             // The client version the online backend reports to the server.
             env["BB_CLIENT_VERSION"] = "shadPS4 Awakenchan/v0.20.0";
 

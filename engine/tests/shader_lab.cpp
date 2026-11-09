@@ -1,5 +1,14 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
+#include <chrono>
+#include "lifter/bridge.h"
+#include "lifter/gcn.h"
+#include "lifter/lift.h"
 #include <algorithm>
+#include <atomic>
+#include <climits>
+#include <cstdint>
+#include <mutex>
+#include <thread>
 #include <array>
 #include <cstddef>
 #include <cstdio>
@@ -50,8 +59,8 @@ using namespace Shader;
 extern "C" {
 void runtime_blocked_report(void) {}
 [[noreturn]] void runtime_thread_exit(void*) { std::abort(); }
-int runtime_pad_type(void) { return 0; }
-int runtime_pad_button(uint32_t, int) { return 0; }
+int sys_pad_type(void) { return 0; }
+int sys_pad_button(uint32_t, int) { return 0; }
 }
 
 namespace {
@@ -350,6 +359,14 @@ bool ApplyLabProfile(Profile& profile) {
         {"flatbuf_storage", &profile.flatbuf_storage},
         {"early_fragment_tests", &profile.early_fragment_tests},
         {"supports_fragment_shader_barycentric", &profile.supports_fragment_shader_barycentric},
+        {"supports_amd_shader_explicit_vertex_parameter", &profile.supports_amd_shader_explicit_vertex_parameter},
+        {"needs_integer_interpolation_fix", &profile.needs_integer_interpolation_fix},
+        {"needs_buffer_offsets", &profile.needs_buffer_offsets},
+        {"needs_clip_distance_emulation", &profile.needs_clip_distance_emulation},
+        {"supports_shader_stencil_export", &profile.supports_shader_stencil_export},
+        {"supports_trinary_minmax", &profile.supports_trinary_minmax},
+        {"supports_native_cube_calc", &profile.supports_native_cube_calc},
+        {"supports_image_load_store_lod", &profile.supports_image_load_store_lod},
         {"fragment_exact_fp", &profile.fragment_exact_fp},
         {"manual_interpolation_all", &profile.manual_interpolation_all},
     };
@@ -452,10 +469,10 @@ std::string RunSelf(const fs::path& self, const std::string& args, int& exit_cod
 
 #ifdef _WIN32
 std::string RunSelf(const fs::path& self, const std::wstring& args, DWORD& exit_code) {
-    SECURITY_ATTRIBUTES sa{sizeof sa, nullptr, TRUE};
+    static std::mutex spawn_mutex;
+    SECURITY_ATTRIBUTES sa{sizeof sa, nullptr, FALSE};
     HANDLE read = nullptr, write = nullptr;
     CreatePipe(&read, &write, &sa, 0);
-    SetHandleInformation(read, HANDLE_FLAG_INHERIT, 0);
     STARTUPINFOW si{sizeof si};
     si.dwFlags = STARTF_USESTDHANDLES;
     si.hStdOutput = write;
@@ -465,8 +482,15 @@ std::string RunSelf(const fs::path& self, const std::wstring& args, DWORD& exit_
     PROCESS_INFORMATION pi{};
     std::string out;
     exit_code = ~0u;
-    if (CreateProcessW(nullptr, line.data(), nullptr, nullptr, TRUE, CREATE_NO_WINDOW, nullptr,
-                       nullptr, &si, &pi)) {
+    BOOL started = FALSE;
+    {
+        std::scoped_lock lock{spawn_mutex};
+        SetHandleInformation(write, HANDLE_FLAG_INHERIT, HANDLE_FLAG_INHERIT);
+        started = CreateProcessW(nullptr, line.data(), nullptr, nullptr, TRUE, CREATE_NO_WINDOW, nullptr,
+                                 nullptr, &si, &pi);
+        SetHandleInformation(write, HANDLE_FLAG_INHERIT, 0);
+    }
+    if (started) {
         CloseHandle(write);
         write = nullptr;
         char buffer[4096];
@@ -734,7 +758,7 @@ void Leave(const fs::path& dir, const std::string& name, u64 pgm, size_t perm) {
     fs::remove(MetaPath(dir, pgm, perm), error);
 }
 
-int RecompileBatch(const fs::path& dir, size_t start, const fs::path& only) {
+int RecompileBatch(const fs::path& dir, size_t start, size_t end, const fs::path& only) {
     const auto profile_bytes = ReadAll(dir / "profile.bin");
     Profile profile{};
     if (profile_bytes.size() != sizeof(Profile)) {
@@ -744,7 +768,8 @@ int RecompileBatch(const fs::path& dir, size_t start, const fs::path& only) {
     std::memcpy(&profile, profile_bytes.data(), sizeof(Profile));
     const auto names = BatchNames(dir, only);
     Pools pools;
-    for (size_t i = start; i < names.size(); ++i) {
+    end = std::min(end, names.size());
+    for (size_t i = start; i < end; ++i) {
         const auto& name = names[i];
         unsigned long long pgm = 0;
         size_t perm = 0;
@@ -984,68 +1009,120 @@ int FixKeys(const fs::path& dir) {
 
 int RecompileCache(const fs::path& self, const fs::path& dir, const fs::path& only = {}) {
     const auto names = BatchNames(dir, only);
-    size_t next = 0, kept = 0, left = 0, crashed = 0;
-    std::vector<size_t> leave;
     const char* verbose_env = std::getenv("BB_LAB_VERBOSE");
     const bool verbose = verbose_env && verbose_env[0] == '1';
-    std::map<std::string, u32> reasons;
-    while (next < names.size()) {
+    struct Slice {
+        size_t begin = 0, end = 0, kept = 0, left = 0, crashed = 0;
+        std::vector<size_t> leave;
+        std::map<std::string, u32> reasons;
+        bool profile = false;
+    };
+    const u32 cores = std::thread::hardware_concurrency();
+    u32 threads = std::clamp<u32>(cores > 1 ? cores - 1 : 1, 1, 8);
+    if (const char* env = std::getenv("BB_RECOMPILE_THREADS"); env && env[0]) {
+        threads = u32(std::clamp(std::atoi(env), 1, 32));
+    }
+    const size_t chunk = std::max<size_t>(32, (names.size() + threads * 4 - 1) / (threads * 4));
+    std::vector<Slice> slices;
+    for (size_t begin = 0; begin < names.size(); begin += chunk) {
+        Slice slice;
+        slice.begin = begin;
+        slice.end = std::min(names.size(), begin + chunk);
+        slices.push_back(std::move(slice));
+    }
+    const auto run = [&](Slice& slice) {
+        size_t next = slice.begin;
+        while (next < slice.end) {
 #ifdef _WIN32
-        DWORD code = 0;
-        const std::string output =
-            RunSelf(self, L"--recompile-batch \"" + dir.wstring() + L"\" " + std::to_wstring(next) +
-                              (only.empty() ? std::wstring{} : L" \"" + only.wstring() + L"\""),
-                    code);
+            DWORD code = 0;
+            const std::string output =
+                RunSelf(self, L"--recompile-batch \"" + dir.wstring() + L"\" " + std::to_wstring(next) + L" " +
+                                  std::to_wstring(slice.end) +
+                                  (only.empty() ? std::wstring{} : L" \"" + only.wstring() + L"\""),
+                        code);
 #else
-        int code = 0;
-        const std::string output =
-            RunSelf(self, "--recompile-batch " + ShellQuote(dir.string()) + " " + std::to_string(next) +
-                              (only.empty() ? std::string{} : " " + ShellQuote(only.string())),
-                    code);
+            int code = 0;
+            const std::string output =
+                RunSelf(self, "--recompile-batch " + ShellQuote(dir.string()) + " " + std::to_string(next) + " " +
+                                  std::to_string(slice.end) +
+                                  (only.empty() ? std::string{} : " " + ShellQuote(only.string())),
+                        code);
 #endif
-        if (output.find("@PROFILE") != std::string::npos) {
+            if (output.find("@PROFILE") != std::string::npos) {
+                slice.profile = true;
+                return;
+            }
+            long long last = -1;
+            std::string at_stage;
+            bool ended = false;
+            size_t at = 0;
+            while (at < output.size()) {
+                const size_t row_end = output.find('\n', at);
+                const std::string row =
+                    output.substr(at, row_end == std::string::npos ? std::string::npos : row_end - at);
+                size_t index = 0;
+                if (std::sscanf(row.c_str(), "@OK %zu", &index) == 1) {
+                    ++slice.kept;
+                    last = (long long)index;
+                } else if (std::sscanf(row.c_str(), "@OUT %zu", &index) == 1) {
+                    ++slice.left;
+                    slice.leave.push_back(index);
+                    last = (long long)index;
+                    const auto why = row.find(' ', 5);
+                    ++slice.reasons[why == std::string::npos ? "?" : row.substr(why + 1)];
+                } else if (row.rfind("@AT ", 0) == 0) {
+                    at_stage = row.substr(4);
+                } else if (row.rfind("@END", 0) == 0) {
+                    ended = true;
+                }
+                if (row_end == std::string::npos) {
+                    break;
+                }
+                at = row_end + 1;
+            }
+            if (ended) {
+                break;
+            }
+            const size_t failed = last < 0 ? next : size_t(last) + 1;
+            if (failed >= slice.end) {
+                break;
+            }
+            slice.leave.push_back(failed);
+            ++slice.crashed;
+            ++slice.reasons["compiler refused, hw/sw stage " + at_stage.substr(at_stage.find(' ') + 1)];
+            next = failed + 1;
+            (void)code;
+        }
+    };
+    std::atomic<size_t> next_slice{0};
+    const auto worker = [&] {
+        for (size_t i; (i = next_slice.fetch_add(1)) < slices.size();) {
+            run(slices[i]);
+        }
+    };
+    std::vector<std::thread> pool;
+    for (size_t t = 1; t < std::min<size_t>(threads, slices.size()); ++t) {
+        pool.emplace_back(worker);
+    }
+    worker();
+    for (auto& thread : pool) {
+        thread.join();
+    }
+    size_t kept = 0, left = 0, crashed = 0;
+    std::vector<size_t> leave;
+    std::map<std::string, u32> reasons;
+    for (const auto& slice : slices) {
+        if (slice.profile) {
             std::printf("Shader cache: written by an engine with another profile; started again\n");
             return 3;
         }
-        long long last = -1;
-        std::string at_stage;
-        bool ended = false;
-        size_t at = 0;
-        while (at < output.size()) {
-            const size_t end = output.find('\n', at);
-            const std::string row = output.substr(at, end == std::string::npos ? std::string::npos : end - at);
-            size_t index = 0;
-            if (std::sscanf(row.c_str(), "@OK %zu", &index) == 1) {
-                ++kept;
-                last = (long long)index;
-            } else if (std::sscanf(row.c_str(), "@OUT %zu", &index) == 1) {
-                ++left;
-                leave.push_back(index);
-                last = (long long)index;
-                const auto why = row.find(' ', 5);
-                ++reasons[why == std::string::npos ? "?" : row.substr(why + 1)];
-            } else if (row.rfind("@AT ", 0) == 0) {
-                at_stage = row.substr(4);
-            } else if (row.rfind("@END", 0) == 0) {
-                ended = true;
-            }
-            if (end == std::string::npos) {
-                break;
-            }
-            at = end + 1;
+        kept += slice.kept;
+        left += slice.left;
+        crashed += slice.crashed;
+        leave.insert(leave.end(), slice.leave.begin(), slice.leave.end());
+        for (const auto& [why, n] : slice.reasons) {
+            reasons[why] += n;
         }
-        if (ended) {
-            break;
-        }
-        const size_t failed = last < 0 ? next : size_t(last) + 1;
-        if (failed >= names.size()) {
-            break;
-        }
-        leave.push_back(failed);
-        ++crashed;
-        ++reasons["compiler refused, hw/sw stage " + at_stage.substr(at_stage.find(' ') + 1)];
-        next = failed + 1;
-        (void)code;
     }
     for (const size_t index : leave) {
         unsigned long long pgm = 0;
@@ -2716,6 +2793,197 @@ int RunCurves(const fs::path& self, const fs::path& dir, const fs::path& report)
 
 }
 
+int LiftCache(const fs::path& dir, const fs::path& report, const fs::path& spv_dir, int rounds) {
+    const auto profile_bytes = ReadAll(dir / "profile.bin");
+    Profile profile{};
+    if (profile_bytes.size() != sizeof(Profile)) {
+        std::fprintf(stderr, "%s: profile of another engine\n", (dir / "profile.bin").string().c_str());
+        return 3;
+    }
+    std::memcpy(&profile, profile_bytes.data(), sizeof(Profile));
+    if (!ApplyLabProfile(profile)) {
+        return 2;
+    }
+    if (!spv_dir.empty()) {
+        fs::create_directories(spv_dir / "old");
+        fs::create_directories(spv_dir / "new");
+    }
+    std::ofstream csv(report);
+    csv << "name,stage,gcn_dwords,old_ns,new_ns,old_words,new_words,blocks,loops,selections,phis,phis_folded,nodes,live,exec_selects,decline\n";
+    Pools pools;
+    std::map<std::string, u32> declines;
+    u32 total = 0, lifted = 0;
+    unsigned long long total_old = 0, total_new = 0, words_old = 0, words_new = 0;
+    for (const auto& name : SpvNames(dir)) {
+        unsigned long long pgm = 0;
+        size_t perm = 0;
+        if (std::sscanf(name.c_str(), "0x%llx_%zu", &pgm, &perm) != 2) {
+            continue;
+        }
+        StageSpecialization spec;
+        size_t meta_perm = ~size_t{};
+        const auto meta = ReadAll(MetaPath(dir, pgm, perm));
+        LoadedCapture cap;
+        if (meta.empty() ||
+            !Vulkan::ReadShaderMetaSpec(std::vector<u8>(meta.begin(), meta.end()), spec, meta_perm) ||
+            meta_perm != perm || cap.Load(dir / (name + Native::StateExtension)) || cap.code.empty()) {
+            continue;
+        }
+        Gcn::fetch_override = cap.fetch.empty() && cap.header.fetch_sgpr != ~0u && spec.fetch_shader_data
+                                  ? &*spec.fetch_shader_data
+                                  : nullptr;
+        unsigned long long best_old = ~0ull, best_new = ~0ull;
+        std::vector<u32> old_spv;
+        Lifter::Output lifted_out;
+        for (int round = 0; round < rounds; ++round) {
+            ShaderParams params = cap.Params();
+            Info info(HwStage(cap.header.hw_stage), SwStage(cap.header.sw_stage), params);
+            RuntimeInfo runtime_info = cap.Runtime();
+            if (const char* planes = std::getenv("BB_LAB_UCP"); planes && info.hw_stage == HwStage::Vertex) {
+                runtime_info.hw.vs.user_clip_plane_mask = u32(std::strtoul(planes, nullptr, 0));
+            }
+            const RuntimeInfo before = runtime_info;
+            const auto t0 = std::chrono::steady_clock::now();
+            const auto program = TranslateProgram(cap.code, pools, info, runtime_info, profile);
+            Backend::Bindings bindings = spec.start;
+            old_spv = Backend::SPIRV::EmitSPIRV(profile, runtime_info, program, bindings);
+            const auto t1 = std::chrono::steady_clock::now();
+            const Lifter::Input input = Lifter::MakeInput(info, before, profile, spec.start, cap.code);
+            const auto t2 = std::chrono::steady_clock::now();
+            lifted_out = Lifter::Lift(input);
+            if (lifted_out.ok() && lifted_out.uses_tone_curve != info.uses_tone_curve) {
+                lifted_out.decline = "tone curve: the two compilers disagree";
+                lifted_out.spirv.clear();
+            }
+            const auto t3 = std::chrono::steady_clock::now();
+            best_old = std::min<unsigned long long>(best_old, std::chrono::duration_cast<std::chrono::nanoseconds>(t1 - t0).count());
+            best_new = std::min<unsigned long long>(best_new, std::chrono::duration_cast<std::chrono::nanoseconds>(t3 - t2).count());
+        }
+        ++total;
+        const auto& st = lifted_out.stats;
+        csv << name << ',' << cap.header.hw_stage << ',' << cap.code.size() << ',' << best_old << ','
+            << best_new << ',' << old_spv.size() << ',' << lifted_out.spirv.size() << ',' << st.blocks << ','
+            << st.loops << ',' << st.selections << ',' << st.phis << ',' << st.phis_folded << ',' << st.nodes
+            << ',' << st.nodes_live << ',' << st.selects_for_exec << ',' << lifted_out.decline << ',' << lifted_out.decline_pc << ',' << lifted_out.last_pc << '\n';
+        if (lifted_out.ok()) {
+            ++lifted;
+            total_old += best_old;
+            total_new += best_new;
+            words_old += old_spv.size();
+            words_new += lifted_out.spirv.size();
+            if (!spv_dir.empty()) {
+                std::ofstream(spv_dir / "old" / (name + ".spv"), std::ios::binary).write(reinterpret_cast<const char*>(old_spv.data()), old_spv.size() * 4);
+                std::ofstream(spv_dir / "new" / (name + ".spv"), std::ios::binary).write(reinterpret_cast<const char*>(lifted_out.spirv.data()), lifted_out.spirv.size() * 4);
+            }
+        } else {
+            ++declines[lifted_out.decline];
+        }
+    }
+    std::printf("%u states, %u lifted\n", total, lifted);
+    std::printf("over the lifted: recompiler %.1f ms, lifter %.1f ms; SPIR-V %llu words against %llu\n",
+                total_old / 1e6, total_new / 1e6, words_old, words_new);
+    for (const auto& [why, count] : declines) {
+        std::printf("%5u %s\n", count, why.c_str());
+    }
+    return 0;
+}
+
+int LiftFiles(const fs::path& dir, const fs::path& report, const fs::path& spv_dir) {
+    if (!spv_dir.empty()) {
+        fs::create_directories(spv_dir);
+    }
+    std::ofstream csv(report);
+    csv << "name,stage,dwords,ns,words,buffers,images,samplers,flat,decline,pc\n";
+    std::map<std::string, u32> declines;
+    u32 total = 0, lifted = 0;
+    unsigned long long total_ns = 0, total_words = 0, total_dwords = 0;
+    for (const auto& entry : fs::directory_iterator(dir)) {
+        const auto ext = entry.path().extension().string();
+        if (ext.size() != 4 || ext[0] != '.') {
+            continue;
+        }
+        const auto bytes = ReadAll(entry.path());
+        std::vector<u32> code(bytes.size() / 4);
+        std::memcpy(code.data(), bytes.data(), code.size() * 4);
+        Lifter::Input in;
+        in.discover = true;
+        in.code = code;
+        const auto decoded = Lifter::Decode(code);
+        bool has_lds_write = false, has_ring_store = false, exports_pos = false, exports_color = false, has_interp = false;
+        for (const auto& inst : decoded.insts) {
+            has_lds_write |= inst.enc == Lifter::Enc::Ds && (inst.op == Lifter::Op::DS_WRITE_B32 || inst.op == Lifter::Op::DS_WRITE2_B32);
+            has_ring_store |= inst.enc == Lifter::Enc::Mubuf && inst.glc && inst.slc;
+            exports_pos |= inst.enc == Lifter::Enc::Exp && inst.target >= 12 && inst.target < 16;
+            exports_color |= inst.enc == Lifter::Enc::Exp && inst.target < 10;
+            has_interp |= inst.enc == Lifter::Enc::Vintrp;
+        }
+        const auto kind = ext.substr(1);
+        if (kind == "ppo") {
+            in.stage = Lifter::Stage::Fragment;
+        } else if (kind == "cpo") {
+            in.stage = Lifter::Stage::Compute;
+        } else if (kind == "hpo") {
+            in.stage = Lifter::Stage::Hull;
+        } else if (kind == "dpo") {
+            in.stage = Lifter::Stage::Domain;
+        } else if (kind == "gpo") {
+            in.stage = Lifter::Stage::Geometry;
+        } else if (kind == "vpo") {
+            in.stage = has_lds_write ? Lifter::Stage::Local : has_ring_store ? Lifter::Stage::Export : Lifter::Stage::Vertex;
+        } else {
+            in.stage = has_lds_write && !exports_color && !exports_pos ? Lifter::Stage::Local
+                       : exports_color || has_interp ? Lifter::Stage::Fragment
+                       : exports_pos ? Lifter::Stage::Vertex
+                                     : Lifter::Stage::Compute;
+        }
+        in.num_user_sgprs = 16;
+        in.num_input_vgprs = 3;
+        for (u32 reg = 0; reg < 16; ++reg) {
+            in.ud_push[reg] = s32(reg);
+        }
+        in.opt.khr_barycentric = true;
+        in.opt.uniform_dword_layout = true;
+        in.opt.szinp_ok = true;
+        for (u32 i = 0; i < 32; ++i) {
+            in.ps_inputs.push_back({u8(i), false, false, 0});
+        }
+        in.z_export_format = 9;
+        in.mrtz_mask = 15;
+        in.workgroup_size = {1, 1, 1};
+        in.tess.ls_stride = 64;
+        in.tess.hs_cp_stride = 64;
+        in.tess.output_vertices = 3;
+        in.tess.domain = 1;
+        in.gs.in_vertices = 3;
+        in.gs.output_vertices = 4;
+        in.gs.invocations = 1;
+        in.gs.out_primitive = 2;
+        const auto t0 = std::chrono::steady_clock::now();
+        const auto out = Lifter::Lift(in);
+        const auto ns = std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - t0).count();
+        ++total;
+        csv << entry.path().filename().string() << ',' << int(in.stage) << ',' << code.size() << ',' << ns << ',' << out.spirv.size() << ','
+            << out.buffers.size() << ',' << out.images.size() << ',' << out.samplers.size() << ',' << out.flat_table.size() << ','
+            << out.decline << ',' << out.last_pc << '\n';
+        if (out.ok()) {
+            ++lifted;
+            total_ns += ns;
+            total_words += out.spirv.size();
+            total_dwords += code.size();
+            if (!spv_dir.empty()) {
+                std::ofstream(spv_dir / (entry.path().stem().string() + ".spv"), std::ios::binary).write(reinterpret_cast<const char*>(out.spirv.data()), out.spirv.size() * 4);
+            }
+        } else {
+            ++declines[out.decline];
+        }
+    }
+    std::printf("%u programs, %u lifted in %.1f ms, %llu dwords of GCN to %llu words of SPIR-V\n", total, lifted, total_ns / 1e6, total_dwords, total_words);
+    for (const auto& [why, count] : declines) {
+        std::printf("%5u %s\n", count, why.c_str());
+    }
+    return 0;
+}
+
 int main(int argc, char** argv) {
     std::vector<char*> args;
     for (int i = 0; i < argc; ++i) {
@@ -2743,6 +3011,13 @@ int main(int argc, char** argv) {
         });
     }
 #endif
+    if (argc >= 3 && std::strcmp(argv[1], "--lift-files") == 0) {
+        return LiftFiles(argv[2], argc >= 4 ? fs::path(argv[3]) : fs::path("lab-lift-files.csv"), g_spv_dir);
+    }
+    if (argc >= 3 && std::strcmp(argv[1], "--lift") == 0) {
+        return LiftCache(argv[2], argc >= 4 ? fs::path(argv[3]) : fs::path("lab-lift.csv"), g_spv_dir,
+                         argc >= 5 ? std::max(1, std::atoi(argv[4])) : 1);
+    }
     if (argc >= 3 && std::strcmp(argv[1], "--check-cache") == 0) {
         return CheckCache(argv[2]);
     }
@@ -2762,7 +3037,9 @@ int main(int argc, char** argv) {
 #endif
     }
     if (argc >= 4 && std::strcmp(argv[1], "--recompile-batch") == 0) {
-        return RecompileBatch(argv[2], std::strtoull(argv[3], nullptr, 10), argc >= 5 ? fs::path(argv[4]) : fs::path{});
+        return RecompileBatch(argv[2], std::strtoull(argv[3], nullptr, 10),
+                              argc >= 5 ? size_t(std::strtoull(argv[4], nullptr, 10)) : SIZE_MAX,
+                              argc >= 6 ? fs::path(argv[5]) : fs::path{});
     }
     if (argc >= 3 && std::strcmp(argv[1], "--bench") == 0) {
 #ifdef _WIN32

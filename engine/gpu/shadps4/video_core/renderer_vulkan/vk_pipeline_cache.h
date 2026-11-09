@@ -97,6 +97,7 @@ struct PipelineSelection {
     std::optional<Shader::Gcn::FetchShaderData> fetch_shader{};
     GraphicsPipelineKey graphics_key{};
     bool motion = false;
+    bool capture = false;
     DrawIndirectParams draw_indirect_params{};
     struct PrepWorker* worker{}; ///< set: read-only selection for a draw-preparation worker
 };
@@ -144,13 +145,15 @@ public:
     static void SaveAllForShutdown();
     // Set once before Liverpool can submit draws or preparation work.
     void SetObjectMotionEnabled(bool enabled) { object_motion_enabled = enabled; }
+    void SetPositionCapture(bool enabled) { position_capture = enabled; }
 
     bool LoadComputePipeline(Serialization::Archive& ar);
     bool LoadGraphicsPipeline(Serialization::Archive& ar, bool legacy);
     bool LoadPipelineStage(Serialization::Archive& ar, size_t stage, u64 expected_hash);
 
     const GraphicsPipeline* GetGraphicsPipeline(const DrawIndirectParams params = {},
-                                                const PreparedDraw* prepared = nullptr);
+                                                const PreparedDraw* prepared = nullptr,
+                                                u64 gx_record = 0);
 
     /// bbport: worker side of draw preparation: selects the pipeline key for `sel.regs` without
     /// creating anything. False when a program or permutation does not exist yet.
@@ -160,6 +163,9 @@ public:
     /// and flattened user data match; null to take the regular path.
     const GraphicsPipeline* TryPreparedPipeline(const PreparedDraw& prepared);
 
+    [[nodiscard]] u32 GxUnfilled() const noexcept {
+        return gx_unfilled;
+    }
     /// bbport: the prepared draw the last GetGraphicsPipeline used, or null (regular path).
     [[nodiscard]] const PreparedDraw* UsedPrepared() const noexcept {
         return used_prepared;
@@ -222,6 +228,16 @@ private:
     std::shared_mutex programs_mutex;
     u64 prepared_hits = 0, prepared_misses = 0;
     const PreparedDraw* used_prepared = nullptr;
+    struct GxPipeline {
+        const GraphicsPipeline* pipeline = nullptr;
+        Shader::Info* vertex = nullptr;
+        Shader::Info* fragment = nullptr;
+    };
+    bool RestoreGxPipeline(const GxPipeline& memo, bool from_record);
+    u32 gx_unfilled = 0;
+    void NoteGxRecords();
+    std::unordered_map<u64, GxPipeline> gx_pipelines;
+    u64 gx_hits = 0, gx_misses = 0, gx_differ = 0, gx_none = 0;
     tsl::robin_map<ComputePipelineKey, std::unique_ptr<ComputePipeline>> compute_pipelines;
     tsl::robin_map<GraphicsPipelineKey, std::unique_ptr<GraphicsPipeline>> graphics_pipelines;
     PipelineSelection sel{}; ///< GPU thread selection state
@@ -233,6 +249,7 @@ private:
     ComputePipelineKey compute_key{};
     u32 num_new_pipelines{}; // new pipelines added to the cache since the game start
     bool object_motion_enabled{};
+    bool position_capture{};
 
     // Only if Config::collectShadersForDebug()
     tsl::robin_map<vk::ShaderModule,

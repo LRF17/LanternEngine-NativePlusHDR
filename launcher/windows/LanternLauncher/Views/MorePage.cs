@@ -14,6 +14,7 @@ namespace BloodborneLauncher.Views
         {
             ("mods", L.T("Mods"), typeof(ModsPage)),
             ("cheats", L.T("Cheats"), typeof(CheatsPage)),
+            ("saves-editor", L.T("Save editor"), typeof(SaveEditorPage)),
             ("engine", L.T("Engine"), typeof(EnginePage)),
             ("output", L.T("Log"), typeof(OutputPage)),
         }.Where(s => s.Item1 != "cheats" || CheatsPage.Supported).ToArray();
@@ -67,7 +68,7 @@ namespace BloodborneLauncher.Views
         private LauncherPage PageOf(Type type)
         {
             if (!_pages.TryGetValue(type, out var page))
-                _pages[type] = page = (LauncherPage)Activator.CreateInstance(type)!;
+                _pages[type] = page = Pages.Create(type);
             return page;
         }
 

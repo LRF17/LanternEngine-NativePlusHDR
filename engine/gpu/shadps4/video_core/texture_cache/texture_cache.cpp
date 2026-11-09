@@ -2,15 +2,28 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 #include <xxhash.h>
+#include <tuple>
 #include <algorithm>
+#include <array>
+#include <cmath>
 #include <optional>
 
 #include "bbport_copy.h"
+#include "engine/gx_objects.h"
 #include "bbport_sections.h"
 #include "bbport_toggles.h"
 #include "bbport_free_check.h"
 #include "engine/key_prompts.h"
+#include "engine/hud_clean.h"
+#include <zlib.h>
+#include <cstdlib>
+#include <cstring>
+#include <filesystem>
+#include <fstream>
+#include <iterator>
+#include <unordered_map>
 #include "common/assert.h"
+#include "video_core/renderer_vulkan/vk_scene_resolution.h"
 #include "common/debug.h"
 #include "common/div_ceil.h"
 #include "common/hash.h"
@@ -38,6 +51,9 @@ using Binding = TextureCache::BindingType;
 
 void TraceOverlap(const ImageInfo& requested, Binding binding, ImageId id, const Image* candidate,
                   std::string_view action, std::string_view reason, int mip = -1, int slice = -1) {
+    if (BbEngine::GxObjects::On()) {
+        BbEngine::GxObjects::NoteOverlap(action.data(), action.size());
+    }
     if (!ImageOverlapLogging()) {
         return;
     }
@@ -153,6 +169,10 @@ TextureCache::TextureCache(const Vulkan::Instance& instance_, Vulkan::Scheduler&
     critical_gc_memory = static_cast<u64>(
         std::max<u64>(std::min(device_local_memory - min_vacancy_critical, min_spacing_critical),
                       DEFAULT_CRITICAL_GC_MEMORY));
+    if (device_local_memory <= DEFAULT_CRITICAL_GC_MEMORY) {
+        pressure_gc_memory = static_cast<u64>(device_local_memory / 100 * 75);
+        critical_gc_memory = static_cast<u64>(device_local_memory / 100 * 88);
+    }
     trigger_gc_memory = static_cast<u64>((device_local_memory - mem_threshold) / 2);
     static_pressure_gc_memory = pressure_gc_memory;
     static_critical_gc_memory = critical_gc_memory;
@@ -643,6 +663,395 @@ void TextureCache::InvalidateMemory(VAddr addr, size_t size) {
     });
 }
 
+namespace {
+struct UiEntry {
+    u32 width, height, size;
+};
+
+struct UiPack {
+    std::filesystem::path dir;
+    std::unordered_map<u64, UiEntry> keys;
+    std::unordered_map<u64, std::vector<u32>> sizes;
+};
+
+const UiPack& Pack() {
+    static const UiPack pack = [] {
+        UiPack p;
+        const char* dir = std::getenv("BB_UI_4K");
+        if (!dir || !*dir) return p;
+        std::error_code error;
+        p.dir = dir;
+        for (const auto& entry : std::filesystem::directory_iterator(p.dir, error)) {
+            const std::string name = entry.path().stem().string();
+            unsigned w = 0, h = 0, size = 0;
+            unsigned long long hash = 0;
+            if (entry.path().extension() != ".bbui" ||
+                std::sscanf(name.c_str(), "%ux%u_%u_%llx", &w, &h, &size, &hash) != 4 || !size) {
+                continue;
+            }
+            p.keys[hash] = {w, h, size};
+            auto& known = p.sizes[u64(w) << 32 | h];
+            if (std::find(known.begin(), known.end(), size) == known.end()) known.push_back(size);
+        }
+        std::printf("UI textures: %zu 4x replacements found in %s\n", p.keys.size(), dir);
+        return p;
+    }();
+    return pack;
+}
+
+constexpr u32 kUiLargestSide = 4096;
+constexpr u64 kUiBudget = 1024ull << 20;
+
+vk::Format UiFormat(vk::Format original) {
+    switch (original) {
+    case vk::Format::eBc1RgbaSrgbBlock:
+    case vk::Format::eBc1RgbSrgbBlock:
+    case vk::Format::eBc2SrgbBlock:
+    case vk::Format::eBc3SrgbBlock:
+    case vk::Format::eBc7SrgbBlock:
+    case vk::Format::eR8G8B8A8Srgb:
+    case vk::Format::eB8G8R8A8Srgb:
+        return vk::Format::eR8G8B8A8Srgb;
+    default:
+        return vk::Format::eR8G8B8A8Unorm;
+    }
+}
+
+bool ReadUiFile(const std::filesystem::path& path, std::vector<u8>& pixels, int& w, int& h) {
+    std::ifstream in(path, std::ios::binary);
+    const std::vector<u8> file{std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>()};
+    if (file.size() < 12 || std::memcmp(file.data(), "BBUI", 4) != 0) {
+        return false;
+    }
+    u32 fw = 0, fh = 0;
+    std::memcpy(&fw, file.data() + 4, 4);
+    std::memcpy(&fh, file.data() + 8, 4);
+    if (!fw || !fh || fw > 16384 || fh > 16384) {
+        return false;
+    }
+    pixels.resize(std::size_t(fw) * fh * 4);
+    uLongf size = uLongf(pixels.size());
+    if (uncompress(pixels.data(), &size, file.data() + 12, uLong(file.size() - 12)) != Z_OK || size != pixels.size()) {
+        return false;
+    }
+    w = int(fw);
+    h = int(fh);
+    return true;
+}
+
+// A 2x2 box reduction. Colour is weighted by alpha, so transparent texels (black in most sheets)
+// don't darken the edges of what is drawn, and sRGB data is averaged as light, not as its encoding.
+void Halve(std::vector<u8>& pixels, int& w, int& h, bool srgb) {
+    static const auto decode = [] {
+        std::array<float, 256> t{};
+        for (int i = 0; i < 256; ++i) {
+            const float c = float(i) / 255.0f;
+            t[i] = c <= 0.04045f ? c / 12.92f : std::pow((c + 0.055f) / 1.055f, 2.4f);
+        }
+        return t;
+    }();
+    static const auto encode = [] {
+        std::array<u8, 4096> t{};
+        for (int i = 0; i < 4096; ++i) {
+            const float c = float(i) / 4095.0f;
+            const float e = c <= 0.0031308f ? c * 12.92f : 1.055f * std::pow(c, 1.0f / 2.4f) - 0.055f;
+            t[i] = u8(std::clamp(e * 255.0f + 0.5f, 0.0f, 255.0f));
+        }
+        return t;
+    }();
+    const auto to_byte = [srgb](float c) {
+        c = std::clamp(c, 0.0f, 1.0f);
+        return srgb ? encode[int(c * 4095.0f + 0.5f)] : u8(c * 255.0f + 0.5f);
+    };
+    const int nw = std::max(1, w / 2), nh = std::max(1, h / 2);
+    std::vector<u8> out(std::size_t(nw) * nh * 4);
+    for (int y = 0; y < nh; ++y)
+        for (int x = 0; x < nw; ++x) {
+            float weighted[3] = {}, plain[3] = {}, alpha = 0.0f;
+            for (int dy = 0; dy < 2; ++dy)
+                for (int dx = 0; dx < 2; ++dx) {
+                    const u8* p = &pixels[(std::size_t(std::min(h - 1, y * 2 + dy)) * w + std::min(w - 1, x * 2 + dx)) * 4];
+                    const float a = float(p[3]) / 255.0f;
+                    for (int c = 0; c < 3; ++c) {
+                        const float v = srgb ? decode[p[c]] : float(p[c]) / 255.0f;
+                        weighted[c] += v * a;
+                        plain[c] += v;
+                    }
+                    alpha += a;
+                }
+            u8* o = &out[(std::size_t(y) * nw + x) * 4];
+            for (int c = 0; c < 3; ++c) {
+                o[c] = to_byte(alpha > 0.0f ? weighted[c] / alpha : plain[c] / 4.0f);
+            }
+            o[3] = u8(alpha / 4.0f * 255.0f + 0.5f);
+        }
+    pixels.swap(out);
+    w = nw;
+    h = nh;
+}
+}
+
+bool TextureCache::UiReplacementsLoaded() {
+    return !Pack().keys.empty();
+}
+
+void TextureCache::NoteUiTexture(Image& image) {
+    image.ui_key = 0;
+    const UiPack& pack = Pack();
+    const ImageInfo& info = image.info;
+    if (pack.keys.empty() || info.props.is_depth || info.resources.layers != 1 || info.size.depth != 1 ||
+        info.size.width < 16 || info.size.height < 16 || !info.guest_address || !info.guest_size) {
+        return;
+    }
+    const bool icon = info.guest_size == KeyPrompts::kIconBytes && info.size.width == 32;
+    const bool hud = info.guest_size == KeyPrompts::kHudBytes && info.size.width == 1024;
+    if (icon || hud) {
+        return;
+    }
+    const auto sizes = pack.sizes.find(u64(info.size.width) << 32 | info.size.height);
+    if (sizes == pack.sizes.end()) {
+        return;
+    }
+    const u8* guest = std::bit_cast<const u8*>(info.guest_address);
+    for (const u32 size : sizes->second) {
+        if (size > info.guest_size) {
+            continue;
+        }
+        const u64 hash = XXH3_64bits(guest, size);
+        const auto it = pack.keys.find(hash);
+        if (it != pack.keys.end() && it->second.width == info.size.width && it->second.height == info.size.height &&
+            it->second.size == size) {
+            image.ui_key = hash;
+            return;
+        }
+    }
+}
+
+Image* TextureCache::UiReplacement(const Image& image) {
+    if (!image.ui_key) {
+        return nullptr;
+    }
+    if (const auto it = ui_images.find(image.ui_key); it != ui_images.end()) {
+        return it->second.get();
+    }
+    if (ui_missing.count(image.ui_key) || ui_bytes >= kUiBudget) {
+        return nullptr;
+    }
+    const UiPack& pack = Pack();
+    const auto entry = pack.keys.find(image.ui_key);
+    if (entry == pack.keys.end()) {
+        return nullptr;
+    }
+    char name[96];
+    std::snprintf(name, sizeof name, "%ux%u_%u_%016llx.bbui", entry->second.width, entry->second.height, entry->second.size,
+                  static_cast<unsigned long long>(image.ui_key));
+    int w = 0, h = 0;
+    std::vector<u8> pixels;
+    if (!ReadUiFile(pack.dir / name, pixels, w, h)) {
+        ui_missing.insert(image.ui_key);
+        return nullptr;
+    }
+    const vk::Format format = UiFormat(image.info.pixel_format);
+    // A BC1 the game reads as RGB has no alpha: its three-colour blocks' fourth texel is opaque
+    // black there, where the replacement (made from the RGBA reading) holds alpha 0.
+    if (image.info.pixel_format == vk::Format::eBc1RgbUnormBlock ||
+        image.info.pixel_format == vk::Format::eBc1RgbSrgbBlock) {
+        for (std::size_t i = 3; i < pixels.size(); i += 4) {
+            pixels[i] = 255;
+        }
+    }
+    while (u32(w) > kUiLargestSide || u32(h) > kUiLargestSide) {
+        Halve(pixels, w, h, format == vk::Format::eR8G8B8A8Srgb);
+    }
+    Image* out = UploadUi(image.ui_key, pixels, w, h, format);
+    static int told = 0;
+    if (told++ < 8) {
+        std::printf("UI textures: %ux%u drawn from its %dx%d replacement (%llu MiB in use)\n", image.info.size.width,
+                    image.info.size.height, w, h, static_cast<unsigned long long>(ui_bytes >> 20));
+    }
+    return out;
+}
+
+// Scales the rectangle of `src` (`src_w` wide) up `s` times into the same rectangle of `dst`
+// (`dst_w` wide): bilinear, weighted by alpha, within the rectangle.
+static void UpscaleRect(const std::vector<u8>& src, int src_w, int rx, int ry, int rw, int rh, std::vector<u8>& dst,
+                 int dst_w, int s) {
+    for (int y = ry * s; y < (ry + rh) * s; ++y) {
+        for (int x = rx * s; x < (rx + rw) * s; ++x) {
+            const float u = std::clamp((float(x) + 0.5f) / float(s) - 0.5f, float(rx), float(rx + rw - 1));
+            const float v = std::clamp((float(y) + 0.5f) / float(s) - 0.5f, float(ry), float(ry + rh - 1));
+            const int x0 = int(u), y0 = int(v);
+            const int x1 = std::min(x0 + 1, rx + rw - 1), y1 = std::min(y0 + 1, ry + rh - 1);
+            const float fx = u - float(x0), fy = v - float(y0);
+            const int tx[4] = {x0, x1, x0, x1}, ty[4] = {y0, y0, y1, y1};
+            const float weight[4] = {(1 - fx) * (1 - fy), fx * (1 - fy), (1 - fx) * fy, fx * fy};
+            float acc[4] = {};
+            for (int k = 0; k < 4; ++k) {
+                const u8* t = &src[(std::size_t(ty[k]) * src_w + tx[k]) * 4];
+                const float a = weight[k] * float(t[3]);
+                for (int c = 0; c < 3; ++c) {
+                    acc[c] += a * float(t[c]);
+                }
+                acc[3] += a;
+            }
+            u8* out = &dst[(std::size_t(y) * dst_w + x) * 4];
+            for (int c = 0; c < 3; ++c) {
+                out[c] = acc[3] > 0.0f ? u8(std::clamp(acc[c] / acc[3] + 0.5f, 0.0f, 255.0f)) : 0;
+            }
+            out[3] = u8(std::clamp(acc[3] + 0.5f, 0.0f, 255.0f));
+        }
+    }
+}
+
+Image* TextureCache::UploadUi(u64 key, std::vector<u8>& pixels, int w, int h, vk::Format format) {
+    const bool srgb = format == vk::Format::eR8G8B8A8Srgb;
+    // The full mip chain: a menu draws its art at a quarter of the replacement's size (a 4x copy at
+    // the game's own size), and a single level sampled that small skips three texels in four.
+    ImageInfo info{};
+    info.pixel_format = format;
+    info.type = AmdGpu::ImageType::Color2D;
+    info.size = {u32(w), u32(h), 1};
+    info.resources.layers = 1;
+    info.num_bits = 32;
+    info.pitch = u32(w);
+    u64 bytes = 0;
+    for (u32 level = 0, lw = u32(w), lh = u32(h); level < info.mips_layout.size(); ++level) {
+        info.mips_layout[level] = {lw * lh * 4, lw, lh, u32(bytes)};
+        bytes += u64(lw) * lh * 4;
+        info.resources.levels = level + 1;
+        if (lw == 1 && lh == 1) {
+            break;
+        }
+        lw = std::max(1u, lw / 2);
+        lh = std::max(1u, lh / 2);
+    }
+    auto replacement = std::make_unique<Image>(instance, runtime, slot_image_views, info);
+    scheduler.EndRendering();
+    // A level at a time: a 4096x4096 chain (85 MB) at once is most of the stream buffer.
+    auto& stream = buffer_cache.GetStreamBuffer();
+    for (u32 level = 0; level < info.resources.levels; ++level) {
+        if (level) {
+            Halve(pixels, w, h, srgb);
+        }
+        const vk::BufferImageCopy copy{
+            .bufferOffset = stream.Copy(pixels.data(), pixels.size(), 256),
+            .imageSubresource = {vk::ImageAspectFlagBits::eColor, level, 0, 1},
+            .imageExtent = {u32(w), u32(h), 1},
+        };
+        runtime.UploadImage(replacement.get(), &stream, {&copy, 1});
+    }
+    ui_bytes += bytes;
+    Image* out = replacement.get();
+    ui_images.emplace(key, std::move(replacement));
+    return out;
+}
+
+// The HUD's sheet is never replaced (key prompts are drawn into it), and the gaps between its
+// sprites carry colour: the HUD bars' glows blend theirs in, and filtering read it past their edges
+// as a faint box. While 4K menus are loaded it is drawn from a cleaned copy (HudClean), with mips,
+// filtered like a replacement: the 4K art for the sheet, cleaned by bb-ui-4k pack (HudArt), when
+// the drawn sheet is the one the art was made from, with the key prompts that aren't the game's
+// own scaled up into it; else the sheet itself, cleaned here. A copy per drawing of the sheet (the
+// key prompts' choices); the oldest beyond kHudCopies is freed once the GPU is past the draws
+// recorded so far.
+void TextureCache::CleanHud(Image& image, const std::vector<u8>& sheet) {
+    // KeyPromptData leaves the bytes of the game's button textures; only the HUD's are this size.
+    if (sheet.size() != KeyPrompts::kHudBytes || !UiReplacementsLoaded()) {
+        return;
+    }
+    const u8* data = sheet.data();
+    const u64 key = XXH3_64bits(data, sheet.size()) ^ 0x6875642d636c65ull; // "hud-cle"
+    image.ui_key = key;
+    if (ui_images.count(key)) {
+        return;
+    }
+    const int sw = int(KeyPrompts::kHudWidth), sh = int(KeyPrompts::kHudHeight);
+    std::vector<u8> small(std::size_t(sw) * sh * 4);
+    KeyPrompts::DecodeHud(data, small.data());
+    std::array<u64, 3> prompts{};
+    const bool same_sheet = KeyPrompts::HudHashes(data, prompts) == HudClean::kSheetMasked;
+    const bool art = same_sheet && HudArt();
+    static bool told = false;
+    if (!same_sheet && !told && HudArt()) {
+        told = true;
+        std::printf("UI textures: the HUD's sheet isn't the one its 4K art was made from; drawn from itself\n");
+    }
+    std::vector<u8> pixels;
+    int w = sw, h = sh, scaled = 0;
+    if (art) {
+        pixels = hud_art.pixels;
+        w = hud_art.w;
+        h = hud_art.h;
+        const int s = w / sw;
+        const auto rects = KeyPrompts::HudPrompts();
+        for (std::size_t i = 0; i < rects.size(); ++i) {
+            if (prompts[i] == HudClean::kSheetPrompts[i]) {
+                continue;
+            }
+            const auto& r = rects[i];
+            UpscaleRect(small, sw, r.x, r.y, r.w, r.h, pixels, w, s);
+            // The gaps around the prompt took the colour of the game's prompt (bb-ui-4k pack):
+            // filled again, a few texels around it too.
+            constexpr int kMargin = 4;
+            const int x0 = std::max(0, (r.x - kMargin) * s), y0 = std::max(0, (r.y - kMargin) * s);
+            const int x1 = std::min(w, (r.x + r.w + kMargin) * s), y1 = std::min(h, (r.y + r.h + kMargin) * s);
+            HudClean::Fill(pixels, w, x0, y0, x1 - x0, y1 - y0);
+            ++scaled;
+        }
+    } else {
+        pixels = std::move(small);
+        HudClean::Clean(pixels, w, h, 1, false);
+    }
+    const u64 before = ui_bytes;
+    UploadUi(key, pixels, w, h, UiFormat(image.info.pixel_format));
+    hud_copies.emplace_back(key, ui_bytes - before);
+    constexpr std::size_t kHudCopies = 3;
+    while (hud_copies.size() > kHudCopies) {
+        const auto [old, bytes] = hud_copies.front();
+        hud_copies.pop_front();
+        const auto it = ui_images.find(old);
+        if (it == ui_images.end()) {
+            continue;
+        }
+        scheduler.DeferOperation([this, copy = std::move(it->second)]() mutable {
+            for (auto& backing : copy->backing_images) {
+                for (const ImageViewId view : backing.image_view_ids) {
+                    slot_image_views.erase(view);
+                }
+            }
+            copy.reset();
+        });
+        ui_images.erase(it);
+        ui_bytes -= bytes;
+    }
+    if (art) {
+        std::printf("UI textures: the HUD's sheet drawn from its 4K art (%d key prompts scaled up into it)\n", scaled);
+    } else {
+        std::printf("UI textures: the HUD's sheet drawn from a cleaned copy\n");
+    }
+}
+
+bool TextureCache::HudArt() {
+    if (!hud_art.tried) {
+        hud_art.tried = true;
+        const UiPack& pack = Pack();
+        int w = 0, h = 0;
+        const int sw = int(KeyPrompts::kHudWidth), sh = int(KeyPrompts::kHudHeight);
+        if (!pack.keys.empty() && ReadUiFile(pack.dir / HudClean::kArtFile, hud_art.pixels, w, h) && w % sw == 0 &&
+            h == sh * (w / sw) && u32(w) <= kUiLargestSide) {
+            hud_art.w = w;
+            hud_art.h = h;
+        } else {
+            hud_art.pixels = {};
+            if (pack.keys.count(HudClean::kArtKey)) {
+                std::printf("UI textures: the 4K menus have no cleaned HUD art (%s); rebuild them for a 4K HUD\n",
+                            HudClean::kArtFile);
+            }
+        }
+    }
+    return !hud_art.pixels.empty();
+}
+
 bool TextureCache::KeyPromptData(const Image& image, std::vector<u8>& data) {
     const ImageInfo& info = image.info;
     const bool icon = info.guest_size == KeyPrompts::kIconBytes && info.size.width == 32;
@@ -963,6 +1372,34 @@ ImageId TextureCache::FindImage(ImageDesc& desc, bool exact_fmt) {
     const auto& info = desc.info;
     ASSERT(info.guest_address != 0);
 
+    const bool owned = BbEngine::GxObjects::TexturesOwned();
+    if (owned && desc.type <= BindingType::DepthTarget && info.num_samples == 1 &&
+        info.pixel_format != vk::Format::eUndefined) {
+        BbEngine::GxObjects::TextureExtent whole;
+        const bool known = BbEngine::GxObjects::TextureAt(info.guest_address, &whole);
+        if (known && (whole.width != info.size.width || whole.height != info.size.height)) {
+            BbEngine::GxObjects::NoteWiden(BbEngine::GxObjects::WidenOtherSize);
+        } else if (known &&
+            whole.levels <= info.mips_layout.size() && whole.levels >= info.resources.levels &&
+            whole.layers >= info.resources.layers &&
+            (whole.levels > info.resources.levels || whole.layers > info.resources.layers)) {
+            ImageInfo wide = info;
+            wide.resources.levels = whole.levels;
+            wide.resources.layers = whole.layers;
+            wide.UpdateSize();
+            const u32 before = info.mips_layout[0].size / std::max<u32>(info.resources.layers, 1);
+            const u32 after = wide.mips_layout[0].size / std::max<u32>(wide.resources.layers, 1);
+            if (before != after || wide.mips_layout[0].pitch != info.mips_layout[0].pitch) {
+                BbEngine::GxObjects::NoteWiden(BbEngine::GxObjects::WidenOtherLayout);
+            } else if (wide.guest_size > whole.room) {
+                BbEngine::GxObjects::NoteWiden(BbEngine::GxObjects::WidenTooLarge);
+            } else {
+                desc.info = wide;
+                BbEngine::GxObjects::NoteWiden(BbEngine::GxObjects::Widened);
+            }
+        }
+    }
+
     std::scoped_lock lock{mutex};
 
     u64 key_hash = info.guest_address ^ info.guest_size << 17 ^ u64(info.pixel_format) << 40 ^
@@ -1004,17 +1441,84 @@ ImageId TextureCache::FindImage(ImageDesc& desc, bool exact_fmt) {
         if (cached.view_slice > 0) {
             desc.view_info.range.base.layer += cached.view_slice;
         }
+        if (BbEngine::GxObjects::On()) {
+            BbEngine::GxObjects::NoteImage(info.guest_address, info.guest_size, ImageUid(cached.image_id), info.size.width, info.size.height,
+                                           static_cast<u32>(info.pixel_format));
+        }
         return cached.image_id;
     }
-
-    ImageIds image_ids;
-    ForEachImageInRegion(info.guest_address, info.guest_size,
-                         [&](ImageId image_id, Image& image) { image_ids.push_back(image_id); });
 
     ImageId image_id{};
 
     int view_mip{-1};
     int view_slice{-1};
+    bool held_served = false;
+    const bool at_object = owned && [&] {
+        using namespace BbEngine::GxObjects;
+        const HeldImage held = HeldAt(info.guest_address);
+        if (!held.object) {
+            NoteObjectPath(PathNoObject);
+            return false;
+        }
+        if (!held.uid) {
+            NoteObjectPath(PathNothingHeld);
+            return true;
+        }
+        const ImageId held_id{held.index};
+        if (!IsRegisteredImage(held_id, held.uid)) {
+            NoteObjectPath(PathHeldGone);
+            return true;
+        }
+        const Image& candidate = slot_images[held_id];
+        int mip{}, slice{};
+        std::string_view reason = ReuseRejection(info, candidate.info, desc.type, exact_fmt, mip, slice);
+        if (reason.empty() && info.props.is_depth && !candidate.info.props.is_depth) {
+            reason = "depth requested of a color image";
+        }
+        if (!reason.empty()) {
+            NoteObjectPath(PathHeldRefused, reason.data(), reason.size());
+            return true;
+        }
+        NoteObjectPath(PathServed);
+        image_id = held_id;
+        held_served = true;
+        return true;
+    }();
+    ImageIds image_ids;
+    if (!held_served || BbEngine::GxObjects::TexturesChecked()) {
+        ForEachImageInRegion(info.guest_address, info.guest_size,
+                             [&](ImageId id, Image&) { image_ids.push_back(id); });
+    }
+    if (at_object && !held_served) {
+        image_ids.erase(std::remove_if(image_ids.begin(), image_ids.end(), [&](ImageId id) {
+            const ImageInfo& other = slot_images[id].info;
+            return other.guest_address >= info.guest_address + info.guest_size ||
+                   info.guest_address >= other.guest_address + other.guest_size;
+        }), image_ids.end());
+        BbEngine::GxObjects::NoteObjectPath(image_ids.empty() ? BbEngine::GxObjects::PathMadeDirectly
+                                                              : BbEngine::GxObjects::PathOverlapped);
+    }
+    if (held_served && BbEngine::GxObjects::TexturesChecked()) {
+        using namespace BbEngine::GxObjects;
+        ImageId exact{};
+        u32 others = 0;
+        for (const auto id : image_ids) {
+            const Image& candidate = slot_images[id];
+            if (id != image_id && candidate.info.pixel_format != vk::Format::eUndefined) {
+                ++others;
+            }
+            int mip{}, slice{};
+            if (!exact && candidate.info.pixel_format != vk::Format::eUndefined &&
+                candidate.info.guest_address == info.guest_address &&
+                candidate.info.guest_size == info.guest_size && candidate.info.size == info.size &&
+                candidate.info.resources == info.resources &&
+                ReuseRejection(info, candidate.info, desc.type, exact_fmt, mip, slice).empty()) {
+                exact = id;
+            }
+        }
+        NoteHeldCheck(exact == image_id ? CheckSame : !exact ? CheckResolver : CheckOther, others);
+        image_ids.clear();
+    }
     // Preserve the exact-match fast path, but validate independent mip/layer coverage too.
     // Other covering parents go through resolution so modified child targets can be merged.
     for (const auto cache_id : image_ids) {
@@ -1100,6 +1604,14 @@ ImageId TextureCache::FindImage(ImageDesc& desc, bool exact_fmt) {
         .view_mip = view_mip,
         .view_slice = view_slice,
     };
+    if (at_object && !held_served && view_mip <= 0 && view_slice <= 0 &&
+        slot_images[image_id].info.guest_address == info.guest_address) {
+        BbEngine::GxObjects::HoldImage(info.guest_address, image_id.index, slot_images[image_id].image_uid);
+    }
+    if (BbEngine::GxObjects::On()) {
+        BbEngine::GxObjects::NoteImage(info.guest_address, info.guest_size, ImageUid(image_id), info.size.width, info.size.height,
+                                       static_cast<u32>(info.pixel_format));
+    }
     return image_id;
 }
 
@@ -1362,6 +1874,8 @@ void TextureCache::RefreshImage(Image& image) {
 
     BB_SECTION(RefreshUpload);
     runtime.UploadImage(&image, buffer, image_copies);
+    NoteUiTexture(image);
+    CleanHud(image, keycaps);
 }
 
 vk::Sampler TextureCache::GetSampler(const AmdGpu::Sampler& sampler,
@@ -1558,6 +2072,13 @@ void TextureCache::GarbageCollectImages() {
                                .count());
     if (instance.CanReportMemoryUsage()) {
         total_used_memory = instance.GetDeviceMemoryUsage();
+        static const bool low_vram_gc = [this] {
+            const char* env = std::getenv("BB_LOW_VRAM_GC");
+            return instance.IsLowVramAmd() && !(env && env[0] == '0');
+        }();
+        if (low_vram_gc) {
+            total_used_memory -= std::min(total_used_memory, instance.GetVmaFreeInBlocks());
+        }
         // bbport: on integrated GPUs (Steam Deck) the usage covers system-memory heaps holding
         // much more than images (buffers backing guest memory), and the startup budget left
         // ~1 GB after its 8 GB system reserve: usage stayed above the critical mark, so the
@@ -1580,10 +2101,14 @@ void TextureCache::GarbageCollectImages() {
             // bbport: discrete GPUs (see DiscretePressurePercent); the budget once a second.
             gc_budget_second = second;
             if (const u64 budget = instance.GetDeviceMemoryBudgetNow(); budget != 0) {
-                pressure_gc_memory = std::max(static_pressure_gc_memory, budget / 100 * percent);
+                const bool small_budget = low_vram_gc || budget <= static_cast<u64>(DEFAULT_CRITICAL_GC_MEMORY);
+                pressure_gc_memory = small_budget
+                                         ? budget / 100 * percent
+                                         : std::max(static_pressure_gc_memory, budget / 100 * percent);
                 critical_gc_memory =
-                    std::max({static_critical_gc_memory, budget / 100 * (percent + 10),
-                              pressure_gc_memory});
+                    small_budget ? budget / 100 * (percent + 10)
+                                 : std::max({static_critical_gc_memory, budget / 100 * (percent + 10),
+                                             pressure_gc_memory});
             }
         }
     }
@@ -1842,6 +2367,9 @@ void TextureCache::DeleteImage(ImageId image_id) {
         if (download_images.contains(image_id)) {
             download_images.erase(image_id);
         }
+    }
+    if (image.scene_proxy && runtime.scene_targets) {
+        runtime.scene_targets->Forget(image.image_uid);
     }
 
     // bbport (GPU hang guard): kept for ImageFreeDelayFrames() frames first (FlushImageGraveyard).

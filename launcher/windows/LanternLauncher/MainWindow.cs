@@ -38,6 +38,7 @@ namespace BloodborneLauncher
         public Panel DialogLayer { get; } = new() { ZIndex = 20 };
 
         // The window's parts (MainWindow.xaml's named elements).
+        private readonly Panel _backdrop = new() { IsHitTestVisible = false, ClipToBounds = true };
         private readonly Image _backdropImage = new() { Stretch = Stretch.UniformToFill, IsVisible = false };
         private readonly Rectangle _backdropShade = new() { IsVisible = false };
         private readonly StackPanel _macButtons = new() { Orientation = Orientation.Horizontal, VerticalAlignment = VerticalAlignment.Center, Background = Brushes.Transparent };
@@ -68,6 +69,7 @@ namespace BloodborneLauncher
 
         // The tabs (Modern) and the sidebar's entries (Classic), by page.
         private readonly List<RadioButton> _tabs = new(), _classic = new();
+        private RadioButton _savesItem = null!, _classicSaves = null!;
         private RadioButton _playItem = null!, _controlsItem = null!, _onlineItem = null!, _settingsItem = null!, _moreItem = null!;
         private RadioButton _classicPlay = null!, _classicControls = null!, _classicMods = null!, _classicOnline = null!,
             _classicSettings = null!, _classicSettingsBottom = null!, _classicEngine = null!, _classicOutput = null!;
@@ -76,7 +78,7 @@ namespace BloodborneLauncher
 
         public MainWindow()
         {
-            Title = "Lantern Engine";
+            Title = "Lantern Engine Native+ HDR";
             Width = 1040;
             Height = 780;
             MinWidth = 820;
@@ -118,8 +120,14 @@ namespace BloodborneLauncher
             ws.GameCrashed += OnGameCrashed;
             ws.SignInRefused += OnSignInRefused;
             ws.Initialise();
+            RestoreWindowPlacement(ws.Settings);
             AddHandler(KeyDownEvent, Window_KeyDown, RoutingStrategies.Bubble);
             AddHandler(PointerPressedEvent, Window_PointerPressed, RoutingStrategies.Tunnel, handledEventsToo: true);
+            AddHandler(PointerWheelChangedEvent, (_, e) =>
+            {
+                if (_modal && !(e.Source is Visual source && DialogLayer.IsVisualAncestorOf(source)))
+                    e.Handled = true;
+            }, RoutingStrategies.Tunnel, handledEventsToo: true);
             Deactivated += (_, _) => _searchResults.IsVisible = false;
 
             if (Array.IndexOf(args, "--test-prompt") is var shot and >= 0 && shot + 1 < args.Length)
@@ -150,8 +158,14 @@ namespace BloodborneLauncher
                 if (ws.Update != null) _titleUpdate.SetTip(L.F($"{ws.Update.Name} is available"));
             };
 
+            PositionChanged += (_, _) => RememberNormalBounds();
+            Resized += (_, _) => RememberNormalBounds();
             Opened += (_, _) =>
             {
+                if (OperatingSystem.IsWindows())
+                    Win32Properties.AddWndProcHookCallback(this, SnapLayoutHook);
+                RememberNormalBounds();
+                PadNavigation.Attach(this);
                 if (_directPlay) Hide();
                 Updater.CleanUp();
                 // Running a beta means choosing beta: kept after updating to a stable release.
@@ -182,6 +196,15 @@ namespace BloodborneLauncher
                     ? L.F($"Lantern Engine ready. Engine: {Paths.PortDir}")
                     : L.T("Lantern Engine ready. Choose the engine folder in Settings."),
                 Paths.IsPortDir(Paths.PortDir) ? LogLevel.Good : LogLevel.Warn);
+            if (NativeRuntime.UnpackedBytes > 0 && NativeRuntime.Folder != null)
+                ws.Log(L.F($"First start of this launcher version: unpacked the graphics libraries it carries (Skia, HarfBuzz and ANGLE, {NativeRuntime.UnpackedBytes / 1048576.0:0.#} MB) to {NativeRuntime.Folder}. Nothing is installed in Windows.") +
+                       (NativeRuntime.RemovedOld > 0 ? " " + L.T("The previous version's copy was removed.") : ""), LogLevel.Step);
+            if (LanternApp.OldRuntimeRemoved > 0)
+                ws.Log(L.F($"Removed {LanternApp.OldRuntimeRemoved} files of the old launcher's .NET runtime from its folder: this launcher is native code and doesn't use them."), LogLevel.Step);
+            if (LanternApp.OldExtractsRemoved > 0)
+                ws.Log(L.F($"Removed {LanternApp.OldExtractsRemoved} copies of the old launcher's Windows libraries from the temp folder ({LanternApp.OldExtractBytes / 1048576.0:0.#} MB): each older version unpacked its own there, and this launcher doesn't use them."), LogLevel.Step);
+            if (Updater.CleanOldFiles(ws.Settings, Paths.PortDir) is > 0 and var cleaned)
+                ws.Log(L.F($"Removed {cleaned} leftover files from older versions."), LogLevel.Step);
             Dispatcher.UIThread.Post(() =>
             {
                 // --test-prompt <png>: a picture of a sample dialog over the launcher, drawn off-screen.
@@ -193,13 +216,23 @@ namespace BloodborneLauncher
                     Prompt.Confirm(L.T("Switch layout"), L.T("The launcher restarts to change its layout."), L.T("Restart now"));
                 else if (_directPlay)
                     _ = PlayDirectAsync();
+                // The setup guide: with --setup, or once on a first start whose game folder is not
+                // ready (a game already set up never sees it). The settings for this PC follow it.
+                else if (Prompt.SnapshotPath == null && (Environment.GetCommandLineArgs().Contains("--setup") ||
+                         (!ws.Settings.Bool("setup_shown") && Paths.IsPortDir(Paths.PortDir) &&
+                          GameCheck.Inspect(GameEnvironment.GameDir(ws.Settings)).Health != Health.Good)))
+                    SetupGuide.Open(firstRun: true);
                 // Once: the settings that suit this PC, shown before anything changes.
                 else if (!ws.Settings.Bool("hardware_offered") && Paths.IsPortDir(Paths.PortDir))
                     OfferBestSettings(firstRun: true);
+                else if (ws.Settings.Bool("hardware_offered") && !ws.Settings.Bool("thanks_maximilian_dood"))
+                    ShowThanks();
                 // Once, after updating from an older launcher (a new install starts on New): the
                 // newer engine or the one 0.9.33 ran, the player's choice. Nothing changes unasked.
                 else if (ws.Settings.Bool("hardware_offered") && !ws.Settings.Bool("engine_preset_asked") && Paths.IsPortDir(Paths.PortDir))
                     AskEnginePreset();
+                else if (ws.Settings.Bool("hardware_offered") && TestedSettings.ShouldAsk(ws.Ini, ws.Settings) && Paths.IsPortDir(Paths.PortDir))
+                    AskTestedSettings();
             }, DispatcherPriority.ApplicationIdle);
         }
 
@@ -210,12 +243,11 @@ namespace BloodborneLauncher
             var root = new Grid { RowDefinitions = new RowDefinitions("34,*,Auto,Auto") };
 
             // Glass (Modern): the game's own artwork, blurred and darkened, behind the frosted panes.
-            var backdrop = new Panel { IsHitTestVisible = false, ClipToBounds = true };
-            backdrop.SetResourceReference(Panel.BackgroundProperty, "WindowBaseBrush");
-            backdrop.Children.Add(_backdropImage);
-            backdrop.Children.Add(_backdropShade);
-            Grid.SetRowSpan(backdrop, 4);
-            root.Children.Add(backdrop);
+            _backdrop.SetResourceReference(Panel.BackgroundProperty, "WindowBaseBrush");
+            _backdrop.Children.Add(_backdropImage);
+            _backdrop.Children.Add(_backdropShade);
+            Grid.SetRowSpan(_backdrop, 4);
+            root.Children.Add(_backdrop);
 
             root.Children.Add(TitleBar());
 
@@ -233,6 +265,7 @@ namespace BloodborneLauncher
             _tabStrip.SetResourceReference(Border.BorderBrushProperty, "GlassPaneStrokeBrush");
             Grid.SetColumn(_tabStrip, 1);
             body.Children.Add(_tabStrip);
+            _pageHost.Margin = new Thickness(0, 0, 8, 0);
             Grid.SetColumn(_pageHost, 1);
             Grid.SetRow(_pageHost, 1);
             body.Children.Add(_pageHost);
@@ -286,6 +319,8 @@ namespace BloodborneLauncher
             root.Children.Add(_searchResults);
 
             Grid.SetRowSpan(DialogLayer, 4);
+            KeyboardNavigation.SetTabNavigation(DialogLayer, KeyboardNavigationMode.Cycle);
+            DialogLayer.Children.CollectionChanged += (_, _) => SetModal(root, DialogLayer.Children.Count > 0);
             root.Children.Add(DialogLayer);
 
             if (!OperatingSystem.IsWindows())
@@ -382,9 +417,8 @@ namespace BloodborneLauncher
             Button Caption(string tip, string glyph, Action click, bool close = false)
             {
                 var path = new Avalonia.Controls.Shapes.Path { Data = Geometry.Parse(glyph), StrokeThickness = 1, Stretch = Stretch.None };
-                path.Bind(Shape.StrokeProperty, new Avalonia.Data.Binding("Foreground")
-                    { RelativeSource = new Avalonia.Data.RelativeSource(Avalonia.Data.RelativeSourceMode.FindAncestor) { AncestorType = typeof(Button) } });
                 var button = new Button { Content = path };
+                path.Bind(Shape.StrokeProperty, button.GetObservable(ForegroundProperty));
                 button.Classes.Add("Caption");
                 if (close) button.Classes.Add("Close");
                 button.SetTip(tip);
@@ -446,7 +480,7 @@ namespace BloodborneLauncher
             grid.Children.Add(_searchArea);
 
             var title = new TextBlock { HorizontalAlignment = HorizontalAlignment.Center, VerticalAlignment = VerticalAlignment.Center, FontSize = 12, IsHitTestVisible = false };
-            var name = new Run("Lantern Engine") { FontWeight = FontWeight.SemiBold };
+            var name = new Run("Lantern Engine Native+ HDR") { FontWeight = FontWeight.SemiBold };
             name.Bind(TextElement.ForegroundProperty, this.GetResourceObservable("TextFillColorPrimaryBrush"));
             _titlePage.Bind(TextElement.ForegroundProperty, this.GetResourceObservable("TextFillColorTertiaryBrush"));
             title.Inlines = new InlineCollection { name, _titlePage };
@@ -498,9 +532,11 @@ namespace BloodborneLauncher
                 return tab;
             }
             _playItem = Tab(L.T("Play"), typeof(PlayPage));
+            _savesItem = Tab(L.T("Saves"), typeof(SavesPage));
             Tab(L.T("Display"), typeof(DisplayPage));
             Tab(L.T("Graphics"), typeof(GraphicsPage));
             _controlsItem = Tab(L.T("Controls"), typeof(ControlsPage));
+            Tab(L.T("Looks"), typeof(LooksPage));
             Tab(L.T("Trophies"), typeof(TrophiesPage));
             _onlineItem = Tab(L.T("Online"), typeof(OnlinePage));
             _settingsItem = Tab(L.T("Settings"), typeof(SettingsPage));
@@ -545,7 +581,9 @@ namespace BloodborneLauncher
             // The hunt, how it looks, the workshop's mods and cheats, the Lantern Engine itself.
             Header(L.T("HUNT"));
             _classicPlay = Item(SymbolRegular.Play24, L.T("Play"), typeof(PlayPage));
+            _classicSaves = Item(SymbolRegular.Save24, L.T("Saves"), typeof(SavesPage));
             _classicControls = Item(SymbolRegular.XboxController24, L.T("Controls"), typeof(ControlsPage));
+            Item(SymbolRegular.Sparkle24, L.T("Looks"), typeof(LooksPage));
             Item(SymbolRegular.Trophy24, L.T("Trophies"), typeof(TrophiesPage));
             _classicOnline = Item(SymbolRegular.Globe24, L.T("Online"), typeof(OnlinePage));
             Header(L.T("SIGHT"), new Thickness(18, 18, 0, 6));
@@ -556,6 +594,7 @@ namespace BloodborneLauncher
             // Cheats beside Mods & patches, once the engine applies them (as More's Cheats tab).
             if (CheatsPage.Supported)
                 _classicCheats = Item(SymbolRegular.Beaker24, L.T("Cheats"), typeof(CheatsPage));
+            Item(SymbolRegular.Save24, L.T("Save editor"), typeof(SaveEditorPage));
             Header(L.T("LANTERN"), new Thickness(18, 18, 0, 6));
             _classicSettings = Item(SymbolRegular.Settings24, L.T("Settings"), typeof(SettingsPage));
             _classicEngine = Item(SymbolRegular.Wrench24, L.T("Engine switches"), typeof(EnginePage));
@@ -618,6 +657,30 @@ namespace BloodborneLauncher
 
         /// <summary>Graphics › Engine preset, asked once: New or Legacy (0.9.33). Closed without a
         /// choice, it asks again at the next start.</summary>
+        private void AskTestedSettings()
+        {
+            var ws = Workspace.Current;
+            var lines = string.Join("\n", TestedSettings.Differences(ws.Ini, ws.Settings).Select(d => TestedSettings.Describe(d, ws.Ini, ws.Settings)));
+            var choice = Prompt.Choose(L.T("This beta was tested with these settings"),
+                L.T("Some of yours are different, so your game may not run the way it did in testing. If you use the tested settings, yours are saved first, and Settings › Beta tested settings brings them back.\n\n") + lines,
+                L.T("Keep mine"), L.T("Use tested settings"));
+            if (choice < 0) return;
+            TestedSettings.MarkAsked(ws.Settings);
+            if (choice == 1)
+            {
+                try
+                {
+                    var file = TestedSettings.Use(ws.Ini, ws.Settings);
+                    ws.Log(L.F($"Using the settings this beta was tested with. Yours are saved in {file}"), LogLevel.Good);
+                }
+                catch (Exception e) when (e is System.IO.IOException or UnauthorizedAccessException or System.Text.Json.JsonException)
+                {
+                    Prompt.Tell(L.T("Your settings were not changed"), L.T("They could not be saved first: ") + e.Message);
+                }
+            }
+            ws.SaveSoon();
+        }
+
         private void AskEnginePreset()
         {
             var ws = Workspace.Current;
@@ -665,7 +728,7 @@ namespace BloodborneLauncher
             _pages.Clear();
             _searchPagesReady = null; // made again for the search when its box is next focused
             if (current == null) return;
-            var page = _pages[current.GetType()] = (LauncherPage)Activator.CreateInstance(current.GetType())!;
+            var page = _pages[current.GetType()] = Pages.Create(current.GetType());
             _pageHost.Content = page;
             page.OnShown();
         }
@@ -739,7 +802,9 @@ namespace BloodborneLauncher
                 },
             };
             var mode = s.Str("ui_background");
-            if (mode == "none")
+            var mica = mode == "mica" && OperatingSystem.IsWindowsVersionAtLeast(10, 0, 22000);
+            ApplyMica(mica, shade);
+            if (mode == "none" || mode == "mica")
             {
                 _backdropLoad++; // a picture still loading is not shown
                 _backdropImage.IsVisible = false;
@@ -758,6 +823,168 @@ namespace BloodborneLauncher
 
         private int _backdropLoad;
 
+        private void ApplyMica(bool on, Color shade)
+        {
+            if (on)
+            {
+                TransparencyLevelHint = new[] { WindowTransparencyLevel.Mica };
+                Background = Brushes.Transparent;
+                _backdrop.Background = new SolidColorBrush(LauncherTheme.WithAlpha(shade, 0x66));
+                return;
+            }
+            if (TransparencyLevelHint.Count > 0)
+                TransparencyLevelHint = Array.Empty<WindowTransparencyLevel>();
+            this.SetResourceReference(BackgroundProperty, "WindowBaseBrush");
+            _backdrop.SetResourceReference(Panel.BackgroundProperty, "WindowBaseBrush");
+        }
+
+        public void CycleTab(int step)
+        {
+            var items = (_sidebarNav ? _classic : _tabs).Where(i => i.IsEffectivelyVisible).ToList();
+            if (items.Count == 0) return;
+            var at = items.FindIndex(i => i.IsChecked == true);
+            var next = items[((at < 0 ? 0 : at + step) % items.Count + items.Count) % items.Count];
+            next.IsChecked = true;
+            next.Focus(NavigationMethod.Directional);
+        }
+
+        public void PlayFromPad()
+        {
+            if (!Workspace.Current.Game.Running) _ = PlayOrStopAsync();
+        }
+
+        private PixelRect _normalBounds;
+
+        private void RememberNormalBounds()
+        {
+            if (WindowState != WindowState.Normal || !IsVisible) return;
+            var scale = DesktopScaling;
+            _normalBounds = new PixelRect(Position, PixelSize.FromSize(ClientSize, scale));
+        }
+
+        private void RestoreWindowPlacement(LauncherSettings settings)
+        {
+            try
+            {
+                var primary = Screens.Primary ?? Screens.All.FirstOrDefault();
+                if (primary == null) return;
+                var scale = primary.Scaling;
+                var work = primary.WorkingArea.ToRect(scale);
+                double width = Width, height = Height;
+                int savedWidth = settings.Int("window_width"), savedHeight = settings.Int("window_height");
+                if (savedWidth >= 400 && savedHeight >= 300)
+                {
+                    width = savedWidth;
+                    height = savedHeight;
+                }
+                MinWidth = Math.Min(MinWidth, work.Width - 16);
+                MinHeight = Math.Min(MinHeight, work.Height - 16);
+                width = Math.Max(MinWidth, Math.Min(width, work.Width - 16));
+                height = Math.Max(MinHeight, Math.Min(height, work.Height - 16));
+                Width = width;
+                Height = height;
+                if (settings.Str("window_x").Length > 0 && settings.Str("window_y").Length > 0)
+                {
+                    var x = (int)Math.Round(settings.Int("window_x") * scale);
+                    var y = (int)Math.Round(settings.Int("window_y") * scale);
+                    var title = new PixelPoint(x + (int)(120 * scale), y + (int)(20 * scale));
+                    if (Screens.All.Any(s => s.Bounds.Contains(title)))
+                    {
+                        WindowStartupLocation = WindowStartupLocation.Manual;
+                        Position = new PixelPoint(x, y);
+                    }
+                }
+                if (settings.Bool("window_maximized"))
+                    WindowState = WindowState.Maximized;
+            }
+            catch (Exception)
+            {
+            }
+        }
+
+        private void SaveWindowPlacement()
+        {
+            try
+            {
+                if (_directPlay || WindowState == WindowState.Minimized || !IsVisible) return;
+                RememberNormalBounds();
+                var bounds = _normalBounds;
+                if (bounds.Width < 1 || bounds.Height < 1) return;
+                var scale = DesktopScaling;
+                var settings = Workspace.Current.Settings;
+                settings.Set("window_maximized", WindowState == WindowState.Maximized);
+                settings.Set("window_width", (int)Math.Round(bounds.Width / scale));
+                settings.Set("window_height", (int)Math.Round(bounds.Height / scale));
+                settings.Set("window_x", (int)Math.Round(bounds.X / scale));
+                settings.Set("window_y", (int)Math.Round(bounds.Y / scale));
+            }
+            catch (Exception)
+            {
+            }
+        }
+
+        private void ShowThanks()
+        {
+            var ws = Workspace.Current;
+            ws.Settings.Set("thanks_maximilian_dood", true);
+            ws.SaveSoon();
+            Prompt.Tell(L.T("Thank you, Maximilian Dood!"), L.T("Thank you to Maximilian Dood for covering Lantern Engine.") + "\n\n" + L.T("Maximilian Dood, I'd love to reach out. My Discord is @awakenkn."));
+        }
+
+        private Button? VisibleMaximize()
+        {
+            if (_winButtons.IsVisible && _winMaximize.IsVisible) return _winMaximize;
+            if (_macButtons.IsVisible && _macMaximize.IsVisible) return _macMaximize;
+            return null;
+        }
+
+        private bool OverMaximize(IntPtr lParam)
+        {
+            if (VisibleMaximize() is not { } button) return false;
+            var x = unchecked((short)(long)lParam);
+            var y = unchecked((short)((long)lParam >> 16));
+            var p = button.PointToClient(new PixelPoint(x, y));
+            return p.X >= 0 && p.Y >= 0 && p.X < button.Bounds.Width && p.Y < button.Bounds.Height;
+        }
+
+        private void SetMaximizeHover(bool on)
+        {
+            if (on) _winMaximize.SetResourceReference(BackgroundProperty, "SidebarItemHoverBrush");
+            else _winMaximize.ClearValue(BackgroundProperty);
+        }
+
+        private IntPtr SnapLayoutHook(IntPtr hwnd, uint msg, IntPtr wParam, IntPtr lParam, ref bool handled)
+        {
+            const uint NcHitTest = 0x0084, NcMouseMove = 0x00A0, NcLButtonDown = 0x00A1, NcLButtonUp = 0x00A2, NcMouseLeave = 0x02A2;
+            const int HtMaxButton = 9;
+            switch (msg)
+            {
+                case NcHitTest:
+                    if (OverMaximize(lParam))
+                    {
+                        handled = true;
+                        return new IntPtr(HtMaxButton);
+                    }
+                    SetMaximizeHover(false);
+                    break;
+                case NcMouseMove:
+                    SetMaximizeHover(wParam.ToInt32() == HtMaxButton);
+                    break;
+                case NcMouseLeave:
+                    SetMaximizeHover(false);
+                    break;
+                case NcLButtonDown when wParam.ToInt32() == HtMaxButton:
+                    handled = true;
+                    break;
+                case NcLButtonUp when wParam.ToInt32() == HtMaxButton:
+                    handled = true;
+                    SetMaximizeHover(false);
+                    ToggleMaximize();
+                    break;
+            }
+            return IntPtr.Zero;
+        }
+
         /// <summary>Finds and decodes the background picture on a worker thread (the game folder may be
         /// on a slow or sleeping disk, and a big PNG takes a while to decode), then shows it.</summary>
         private async Task LoadBackdropAsync(string mode, string own, string game, int width)
@@ -768,6 +995,11 @@ namespace BloodborneLauncher
             {
                 image = await Task.Run(() =>
                 {
+                    if (AppIcon.Backdrop(mode) is { } builtIn)
+                    {
+                        using var carried = typeof(AppIcon).Assembly.GetManifestResourceStream(builtIn);
+                        if (carried != null) return Bitmap.DecodeToWidth(carried, width);
+                    }
                     string? art = mode == "custom" && File.Exists(own)
                         ? own
                         : new[] { "pic1.png", "pic0.png" }
@@ -870,6 +1102,7 @@ namespace BloodborneLauncher
 
         private void OnClosing(object? sender, WindowClosingEventArgs e)
         {
+            SaveWindowPlacement();
             Workspace.Current.SaveNow();
             if (_closing || !Workspace.Current.Game.Running)
             {
@@ -954,7 +1187,7 @@ namespace BloodborneLauncher
         private LauncherPage PageOf(Type type)
         {
             if (!_pages.TryGetValue(type, out var page))
-                _pages[type] = page = (LauncherPage)Activator.CreateInstance(type)!;
+                _pages[type] = page = Pages.Create(type);
             return page;
         }
 
@@ -969,6 +1202,7 @@ namespace BloodborneLauncher
             var item = _sidebarNav
                 ? page switch
                 {
+                    "saves" => _classicSaves,
                     "output" => _classicOutput,
                     "online" => _classicOnline,
                     "advanced" => _classicSettings,
@@ -980,6 +1214,7 @@ namespace BloodborneLauncher
                 }
                 : page switch
                 {
+                    "saves" => _savesItem,
                     "online" => _onlineItem,
                     "advanced" => _settingsItem,
                     "output" or "mods" or "engine" => _moreItem,
@@ -1042,8 +1277,36 @@ namespace BloodborneLauncher
             }
         }
 
+        private bool _modal;
+        private IPointer? _lastPointer;
+        private readonly List<Control> _blocked = new();
+
+        private void SetModal(Panel root, bool modal)
+        {
+            if (modal == _modal) return;
+            _modal = modal;
+            if (modal) _lastPointer?.Capture(null);
+            if (modal)
+            {
+                _blocked.Clear();
+                foreach (var child in root.Children)
+                    if (!ReferenceEquals(child, DialogLayer) && child.IsHitTestVisible)
+                    {
+                        child.IsHitTestVisible = false;
+                        _blocked.Add(child);
+                    }
+            }
+            else
+            {
+                foreach (var child in _blocked) child.IsHitTestVisible = true;
+                _blocked.Clear();
+            }
+            if (modal) _searchResults.IsVisible = false;
+        }
+
         private void Window_PointerPressed(object? sender, PointerPressedEventArgs e)
         {
+            _lastPointer = e.Pointer;
             // A click anywhere else closes the results (the text stays; typing opens them again).
             if (_searchResults.IsVisible && e.Source is Visual source &&
                 !_searchResults.IsVisualAncestorOf(source) && !_searchArea.IsVisualAncestorOf(source))
@@ -1228,20 +1491,41 @@ namespace BloodborneLauncher
         /// <summary>An older package's engine: download the latest package and update it in place.</summary>
         public async Task UpdateEngineAsync()
         {
-            var ws = Workspace.Current;
-            if (!Updater.Supported)
+            if (_updatingEngine) return;
+            _updatingEngine = true;
+            try
             {
-                Prompt.Tell(L.T("Update engine"), L.F($"Updating from the launcher is for the Windows package. See {Updater.ReleasesPage}"));
-                return;
+                var ws = Workspace.Current;
+                if (!Updater.Supported)
+                {
+                    Prompt.Tell(L.T("Update engine"), L.F($"Updating from the launcher is for the Windows package. See {Updater.ReleasesPage}"));
+                    return;
+                }
+                Updater.Release? release;
+                try
+                {
+                    release = ws.Latest ?? await Updater.LatestAsync(Updater.BetaChannel(ws.Settings));
+                }
+                catch (Exception e) when (e is HttpRequestException or TaskCanceledException)
+                {
+                    Prompt.Tell(L.T("Update engine"),
+                        L.F($"Couldn't reach GitHub to look up the latest version. Check your connection and try again, or see {Updater.ReleasesPage}"));
+                    return;
+                }
+                if (release?.ZipUrl == null)
+                {
+                    Prompt.Tell(L.T("Update engine"), L.F($"No package is published yet. See {Updater.ReleasesPage}"));
+                    return;
+                }
+                await InstallAsync(release, package: true);
             }
-            var release = ws.Latest ?? await Updater.LatestAsync(Updater.BetaChannel(ws.Settings));
-            if (release?.ZipUrl == null)
+            finally
             {
-                Prompt.Tell(L.T("Update engine"), L.F($"No package is published yet. See {Updater.ReleasesPage}"));
-                return;
+                _updatingEngine = false;
             }
-            await InstallAsync(release, package: true);
         }
+
+        private bool _updatingEngine;
 
         /// <summary>A release the player picked in Settings › Updates › Version, older ones included.</summary>
         public async Task InstallVersionAsync(Updater.Release release)
@@ -1268,7 +1552,7 @@ namespace BloodborneLauncher
                 return;
             }
             var notes = release.Notes.Trim();
-            if (notes.Length > 1200) notes = notes[..1200] + "…";
+            if (notes.Length > 6000) notes = notes[..6000] + "…";
             var size = package ? release.ZipSize : release.ExeSize;
             var older = !release.IsNewerThan(Updater.Current, Updater.CurrentBeta);
             var body = L.F($"You have {Updater.CurrentLabel}. ") +
@@ -1294,6 +1578,9 @@ namespace BloodborneLauncher
             try
             {
                 ws.SaveNow();
+                var savesRoot = GameEnvironment.SavesRoot(ws.Settings);
+                if (await System.Threading.Tasks.Task.Run(() => SaveGuard.Secure(savesRoot)) > 0)
+                    ws.Log(L.F($"Saves: safety copy made in {SaveGuard.VaultDir} before the update."), LogLevel.Info);
                 var skipped = await Updater.InstallAsync(release, package, progress);
                 if (skipped.Count > 0)
                     Prompt.Tell(L.T("Updated, with files left out"),
@@ -1459,6 +1746,17 @@ namespace BloodborneLauncher
                 GameEnvironment.ResolutionPatchChoice = choice == 1 ? "keep" : "skip";
                 ws.Log(choice == 1 ? L.F($"{names}: kept on with the {outW} × {outH} output.")
                     : L.F($"{names}: left out; the output resolution sets the picture."), LogLevel.Step);
+            }
+
+            // No game folder with eboot.bin: the engine would only log "No eboot.bin". The setup
+            // guide says what is missing instead.
+            if (!GameRunner.Custom(s) && !System.IO.File.Exists(System.IO.Path.Combine(GameEnvironment.GameDir(s), "eboot.bin")))
+            {
+                if (Prompt.Choose(L.T("The game is not set up yet"),
+                        L.T("The launcher has no game folder with eboot.bin in it, so the game cannot start. The setup guide shows where your game files go and checks them."),
+                        L.T("Cancel"), L.T("Open the setup guide")) == 1)
+                    SetupGuide.Open();
+                return;
             }
 
             // A game left running in the background (an earlier start that never ended, or another

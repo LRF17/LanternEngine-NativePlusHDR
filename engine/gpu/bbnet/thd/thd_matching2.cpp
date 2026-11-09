@@ -13,6 +13,10 @@
 
 #include "core/libraries/libs.h"
 
+namespace BbRoom {
+void NoteSentHome();
+}
+
 namespace BbThd {
 namespace {
 
@@ -320,9 +324,14 @@ void end_session_locked(const char* why) {
     if (!g.in_room && !g.leave_pending) return;
     Log("np: session over (%s): room %llu", why, static_cast<unsigned long long>(g.room_id));
     if (!g.session_id.empty()) {
-        Json reply;
-        std::string err;
-        ServerLeaveRoom(g.session_id, g.member_id, reply, err);
+        // On the dispatcher, not in the game's call: the request froze a frame for a server round
+        // trip (~270 ms). The dispatcher runs in order, so a room the game creates or joins next
+        // reaches the server after this leave, and the 0x103 below still comes after it.
+        DispatchAfter(0, Prio::Request, [sid = g.session_id, mid = g.member_id] {
+            Json reply;
+            std::string err;
+            if (!ServerLeaveRoom(sid, mid, reply, err)) Log("np: leave_room failed: %s", err.c_str());
+        });
     }
     std::vector<std::uint16_t> ids;
     for (const Peer& p : room_peers()) ids.push_back(p.member_id);
@@ -445,7 +454,7 @@ void on_server_event(const Json& ev) {
             else PeersErase(1);
         }
         Log("np: guest_invite: room %lld from %s (%s:%lld)", IntOf(ev, "RoomId", 0), StrOf(ev, "HostOnlineId").c_str(),
-            StrOf(ev, "HostAddr").c_str(), IntOf(ev, "HostPort", 0));
+            BbNet::MaskIpText(StrOf(ev, "HostAddr")).c_str(), IntOf(ev, "HostPort", 0));
         return;
     }
     if (name == "room_member_joined") {
@@ -527,6 +536,7 @@ void on_server_event(const Json& ev) {
         const auto mid = static_cast<std::uint16_t>(IntOf(ev, "MemberId", 0));
         if (room != g.room_id || mid != g.member_id) return;
         const std::vector<std::uint8_t> opt = b64_decode(StrOf(ev, "OptData"));
+        BbRoom::NoteSentHome();
         room_gone_locked(kEvKickedOut, kCauseKickout, opt.data(), opt.size(), "kicked by the host");
         return;
     }

@@ -66,6 +66,7 @@ find_package(tsl-robin-map REQUIRED)
 find_package(PkgConfig REQUIRED)
 pkg_check_modules(XXHASH REQUIRED IMPORTED_TARGET libxxhash)
 pkg_check_modules(SDL3 REQUIRED IMPORTED_TARGET sdl3)
+pkg_check_modules(OPUS REQUIRED IMPORTED_TARGET opus)
 find_package(Zydis REQUIRED)
 if (WIN32)
     # bbport: Windows (MSYS2 MINGW64). bbgpu is a static library linked into bb-probe.exe
@@ -147,11 +148,19 @@ function(add_host_shader FILENAME SHADER_NAME)
     string(TOUPPER ${SHADER_NAME} SYMBOL)
     set(DEFINES ${ARGN})
     list(TRANSFORM DEFINES PREPEND "-D")
+    set(INCLUDES "")
+    set(STAGE "")
+    if (FILENAME MATCHES "\\.frag$" AND SHADER_NAME MATCHES "_comp$")
+        set(STAGE -S comp)
+    endif()
+    if (FILENAME MATCHES "^native_motion_blur")
+        list(APPEND INCLUDES ${SHADER_SRC}/native_motion_blur.glsl)
+    endif()
     add_custom_command(OUTPUT ${OUT}
         COMMAND ${CMAKE_COMMAND} -E make_directory ${SHADER_DIR}
-        COMMAND ${GLSLANG_COMPILER} --target-env vulkan1.3 -o ${OUT} --vn ${SYMBOL} ${DEFINES} ${SHADER_SRC}/${FILENAME}
+        COMMAND ${GLSLANG_COMPILER} --target-env vulkan1.3 -o ${OUT} --vn ${SYMBOL} ${STAGE} ${DEFINES} ${SHADER_SRC}/${FILENAME}
         COMMAND ${CMAKE_COMMAND} "-DHEADER_FILE=${OUT}" -P ${SHADER_SRC}/AddShaderHeaderInclude.cmake
-        DEPENDS ${SHADER_SRC}/${FILENAME} VERBATIM)
+        DEPENDS ${SHADER_SRC}/${FILENAME} ${INCLUDES} VERBATIM)
     set(SHADER_HEADERS ${SHADER_HEADERS} ${OUT} PARENT_SCOPE)
 endfunction()
 add_host_shader(color_to_ms_depth.frag color_to_ms_depth_frag)
@@ -162,6 +171,39 @@ add_host_shader(fs_tri.vert fs_tri_vert)
 add_host_shader(fsr.comp fsr_easu_comp SAMPLE_EASU=1)
 add_host_shader(fsr.comp fsr_rcas_comp SAMPLE_RCAS=1)
 add_host_shader(post_process.frag post_process_frag)
+add_host_shader(gtao.frag gtao_frag)
+# graphics_ao_quality=1 (High, README.md): three directions, the denoiser, full internal resolution.
+add_host_shader(gtao.frag gtao_hq_frag GTAO_SPATIAL_HQ=1 GTAO_SLICES=3 GTAO_STEPS=6)
+add_host_shader(gtao.frag gtao_single_hq_frag GTAO_SPATIAL_HQ=1 GTAO_SLICES=1 GTAO_STEPS=6)
+add_host_shader(gtao.frag gtao_reference_frag GTAO_SPATIAL_HQ=1 GTAO_SLICES=16 GTAO_STEPS=32)
+add_host_shader(gtao.frag gtao_full_comp GTAO_COMPUTE=1 GTAO_SPATIAL_HQ=1 GTAO_SLICES=3 GTAO_STEPS=6)
+add_host_shader(gtao_denoise.comp gtao_denoise_comp)
+add_host_shader(gtao_denoise.comp gtao_denoise_full_comp FULLRES=1)
+add_host_shader(gtao_denoise.comp gtao_copy_comp COPY=1)
+add_host_shader(ssr.frag ssr_frag)
+add_host_shader(ssr_temporal.comp ssr_temporal_resolve_comp RESOLVE=1)
+add_host_shader(ssr_temporal.comp ssr_temporal_copy_comp COPY=1)
+add_host_shader(ssr_trace.comp ssr_trace_comp)
+add_host_shader(contact_shadow.comp contact_shadow_comp)
+add_host_shader(rt_shadow.comp rt_shadow_comp)
+add_host_shader(rt_unproject.comp rt_unproject_comp)
+add_host_shader(point_shadow_ray.comp point_shadow_ray_comp)
+add_host_shader(ssgi_gather_ray.comp ssgi_gather_ray_comp)
+add_host_shader(rt_shadow_filter.comp rt_shadow_filter_comp)
+add_host_shader(rt_lab.comp rt_lab_comp)
+add_host_shader(point_shadow.comp point_shadow_comp)
+add_host_shader(point_volumetric.comp point_volumetric_comp)
+add_host_shader(native_motion_blur.frag native_motion_blur_frag)
+add_host_shader(native_motion_blur_test.comp native_motion_blur_test_comp)
+add_host_shader(volumetric_light.comp volumetric_light_integrate_comp INTEGRATE=1)
+add_host_shader(volumetric_light.comp volumetric_light_repair_comp REPAIR=1)
+add_host_shader(volumetric_light.comp volumetric_light_tint_comp TINT=1)
+add_host_shader(volumetric_light.comp volumetric_light_composite_comp COMPOSITE=1)
+add_host_shader(volumetric_light.comp volumetric_light_filter_comp FILTER=1)
+add_host_shader(ssgi.comp ssgi_prep_comp PREP=1)
+add_host_shader(ssgi.comp ssgi_gather_comp GATHER=1)
+add_host_shader(ssgi.comp ssgi_denoise_comp DENOISE=1)
+add_host_shader(ssgi.comp ssgi_composite_comp COMPOSITE=1)
 add_host_shader(hdr_output.frag hdr_output_frag)
 add_host_shader(hdr_native.comp hdr_native_luma_comp LUMA=1)
 add_host_shader(hdr_native.comp hdr_native_stats_comp STATS=1)
@@ -203,7 +245,6 @@ set(COMMON
     shadps4/common/path_util.cpp shadps4/common/rdtsc.cpp shadps4/common/spin_lock.cpp shadps4/common/recursive_lock.cpp
     shadps4/common/string_util.cpp shadps4/common/thread.cpp shadps4/common/signal_context.cpp
     shim/common/logging/log.cpp)
-file(GLOB AVPLAYER CONFIGURE_DEPENDS shadps4/core/libraries/avplayer/*.cpp)
 pkg_check_modules(FFMPEG REQUIRED IMPORTED_TARGET libavformat libavcodec libavutil libswscale libswresample)
 file(GLOB SHIM_SOURCES CONFIGURE_DEPENDS shim/*.cpp shim/*/*.cpp)
 if (WIN32)
@@ -219,15 +260,12 @@ else()
     set(BBGPU_LIBRARY_TYPE SHARED)
 endif()
 add_library(bbgpu ${BBGPU_LIBRARY_TYPE} ${VIDEO_CORE} ${RECOMPILER} ${COMMON} ${SHIM_SOURCES}
-    shadps4/core/libraries/gnmdriver/gnmdriver.cpp
-    shadps4/core/libraries/videoout/driver.cpp shadps4/core/libraries/videoout/video_out.cpp
-    shadps4/core/libraries/kernel/equeue.cpp ${AVPLAYER}
-    shadps4/core/libraries/videodec/video_utils.cpp)
+    shadps4/core/libraries/gnmdriver/gnmdriver.cpp)
 add_dependencies(bbgpu host_shaders)
 add_subdirectory(bbnet)
 target_link_libraries(bbgpu PUBLIC bbnet)
 # In-game settings menu: Dear ImGui (third_party/imgui, MIT) with its Vulkan backend, and an
-# embedded Cyrillic font (third_party/fonts).
+# embedded Cyrillic font (third_party/fonts); party names in Flesh and Blood by JoannaVu.
 target_sources(bbgpu PRIVATE third_party/imgui/imgui.cpp third_party/imgui/imgui_draw.cpp
     third_party/imgui/imgui_tables.cpp third_party/imgui/imgui_widgets.cpp
     third_party/imgui/backends/imgui_impl_vulkan.cpp)
@@ -235,13 +273,14 @@ target_include_directories(bbgpu PRIVATE third_party/imgui third_party/imgui/bac
 target_compile_definitions(bbgpu PRIVATE IMGUI_IMPL_VULKAN_NO_PROTOTYPES
     BB_FONT_PATH="${CMAKE_CURRENT_SOURCE_DIR}/third_party/fonts/DejaVuSans.ttf"
     BB_CJK_FONT_PATH="${CMAKE_CURRENT_SOURCE_DIR}/third_party/fonts/LanternMenuSC.ttf"
+    BB_NAME_FONT_PATH="${CMAKE_CURRENT_SOURCE_DIR}/third_party/fonts/FleshAndBlood.ttf"
     BB_KEYCAP_FONT_PATH="${CMAKE_CURRENT_SOURCE_DIR}/third_party/imgui/misc/fonts/Roboto-Medium.ttf")
 set_source_files_properties(shim/bbport_overlay.cpp PROPERTIES
-    OBJECT_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/third_party/fonts/DejaVuSans.ttf;${CMAKE_CURRENT_SOURCE_DIR}/third_party/fonts/LanternMenuSC.ttf")
+    OBJECT_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/third_party/fonts/DejaVuSans.ttf;${CMAKE_CURRENT_SOURCE_DIR}/third_party/fonts/LanternMenuSC.ttf;${CMAKE_CURRENT_SOURCE_DIR}/third_party/fonts/FleshAndBlood.ttf")
 # Keyboard prompts' keycaps (shim/engine/keycap_art.cpp): Roboto Medium (Apache License 2.0).
 set_source_files_properties(shim/engine/keycap_art.cpp PROPERTIES
     OBJECT_DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/third_party/imgui/misc/fonts/Roboto-Medium.ttf)
-target_include_directories(bbgpu PRIVATE shim shadps4 ${SHADER_INCLUDE} third_party/gcn/include third_party/half/include)
+target_include_directories(bbgpu PRIVATE shim shadps4 ../src ${SHADER_INCLUDE} third_party/gcn/include third_party/half/include)
 # bbport: NVIDIA Streamline SDK headers (MIT), for DLSS Frame Generation (vk_streamline.cpp).
 target_include_directories(bbgpu PRIVATE third_party/streamline/include)
 target_compile_definitions(bbgpu PRIVATE BOOST_ASIO_STANDALONE NDEBUG)
@@ -258,7 +297,7 @@ endif()
 target_link_libraries(bbgpu PRIVATE ffx-vulkan::portable ffx-vulkan::fsr4-v07-vulkan
     ffx-vulkan::fsr3-vk-framegeneration-3.1.6) # bbport: frame generation (vk_frame_generation.cpp)
 target_link_libraries(bbgpu PUBLIC Vulkan::Headers fmt::fmt Boost::headers magic_enum::magic_enum
-    tsl::robin_map GPUOpen::VulkanMemoryAllocator PkgConfig::XXHASH PkgConfig::SDL3 PkgConfig::FFMPEG miniz::miniz Zydis::Zydis sirit
+    tsl::robin_map GPUOpen::VulkanMemoryAllocator PkgConfig::XXHASH PkgConfig::SDL3 PkgConfig::OPUS PkgConfig::FFMPEG miniz::miniz Zydis::Zydis sirit
     xbyak::xbyak)
 if (WIN32)
     # Windows headers: no min/max macros, no winsock 1 clash; Windows 10+ APIs (SetThreadDescription).
@@ -299,6 +338,28 @@ target_link_libraries(pipeline-archive-test PRIVATE fmt::fmt)
 add_executable(motion-history-test EXCLUDE_FROM_ALL ../tests/test_motion_history.cpp)
 target_compile_options(motion-history-test PRIVATE -UNDEBUG -Wall -Wextra -Werror)
 target_include_directories(motion-history-test PRIVATE ..)
+add_executable(lamp-fog-lights-test EXCLUDE_FROM_ALL ../tests/test_lamp_fog_lights.cpp)
+target_compile_options(lamp-fog-lights-test PRIVATE -UNDEBUG -Wall -Wextra -Werror)
+target_include_directories(lamp-fog-lights-test PRIVATE ..)
+foreach(effect_test
+        "motion-blur-shader-test;test_motion_blur.cpp"
+        "directional-shadow-test;test_directional_shadows.cpp"
+        "rt-shadow-test;test_rt_shadows.cpp"
+        "point-volumetric-test;test_point_volumetric.cpp"
+        "volumetric-tint-test;test_volumetric_tint.cpp"
+        "effect-pipelines-test;test_effect_pipelines.cpp")
+    list(GET effect_test 0 effect_test_name)
+    list(GET effect_test 1 effect_test_source)
+    add_executable(${effect_test_name} EXCLUDE_FROM_ALL ../tests/${effect_test_source})
+    target_include_directories(${effect_test_name} PRIVATE ${SHADER_INCLUDE})
+    target_compile_options(${effect_test_name} PRIVATE -UNDEBUG -Wall -Werror)
+    target_link_libraries(${effect_test_name} PRIVATE Vulkan::Vulkan)
+    add_dependencies(${effect_test_name} host_shaders)
+endforeach()
+add_executable(native-local-shadows-test EXCLUDE_FROM_ALL ../tests/test_native_local_shadows.cpp
+    shim/engine/graphics.cpp shim/engine/engine_hooks.cpp shim/bbport_settings.cpp shim/bbport_menu_i18n.cpp)
+target_include_directories(native-local-shadows-test PRIVATE shim)
+target_compile_options(native-local-shadows-test PRIVATE -UNDEBUG -Wall -Wextra -Werror)
 add_executable(occlusion-test EXCLUDE_FROM_ALL ../tests/test_occlusion.cpp)
 target_compile_options(occlusion-test PRIVATE -UNDEBUG -Wall -Wextra -Werror)
 target_include_directories(occlusion-test PRIVATE ..)
@@ -332,6 +393,12 @@ add_executable(settings-test EXCLUDE_FROM_ALL ../tests/test_settings.cpp shim/bb
     shim/bbport_menu_i18n.cpp)
 target_compile_options(settings-test PRIVATE -UNDEBUG -Wall -Wextra -Werror)
 target_include_directories(settings-test PRIVATE .. shim)
+# bbport: GTAO on synthetic scenes (Regular, High and its denoiser); plain Vulkan, no bbgpu.
+add_executable(gtao-test EXCLUDE_FROM_ALL ../tests/test_gtao.cpp)
+target_include_directories(gtao-test PRIVATE ${SHADER_INCLUDE})
+target_compile_options(gtao-test PRIVATE -UNDEBUG -Wall -Wextra -Werror -Wno-missing-field-initializers)
+target_link_libraries(gtao-test PRIVATE Vulkan::Vulkan)
+add_dependencies(gtao-test host_shaders)
 
 add_executable(scene-resolution-test EXCLUDE_FROM_ALL ../tests/test_scene_resolution.cpp ../tests/test_gpu_runtime_stubs.cpp)
 target_include_directories(scene-resolution-test PRIVATE shim shadps4 third_party/gcn/include)
@@ -407,6 +474,12 @@ target_link_libraries(bb-engine-assets PRIVATE ZLIB::ZLIB)
 if (WIN32)
     target_link_libraries(bb-engine-assets PRIVATE shell32)
 endif()
+add_executable(bb-ui-4k ../tools/engine/ui_4k.cpp shim/hud_gauge.cpp)
+target_include_directories(bb-ui-4k PRIVATE shim)
+target_link_libraries(bb-ui-4k PRIVATE ZLIB::ZLIB PkgConfig::XXHASH)
+if (WIN32)
+    target_link_libraries(bb-ui-4k PRIVATE shell32)
+endif()
 add_executable(menu-assets-test EXCLUDE_FROM_ALL ../tests/test_menu_assets.cpp ${BB_MENU_ASSETS})
 target_include_directories(menu-assets-test PRIVATE ${CMAKE_CURRENT_BINARY_DIR}/include)
 target_compile_options(menu-assets-test PRIVATE -UNDEBUG -Wall -Wextra)
@@ -417,6 +490,21 @@ target_include_directories(option-rows-test PRIVATE ..)
 add_executable(engine-menu-memory-test EXCLUDE_FROM_ALL ../tests/test_engine_menu_memory.cpp shim/engine/menu_memory.cpp)
 target_compile_options(engine-menu-memory-test PRIVATE -UNDEBUG -Wall -Wextra -Werror)
 target_include_directories(engine-menu-memory-test PRIVATE ..)
+add_executable(shared-progress-test EXCLUDE_FROM_ALL ../tests/test_shared_progress.cpp)
+target_compile_options(shared-progress-test PRIVATE -UNDEBUG -Wall -Wextra -Werror)
+target_include_directories(shared-progress-test PRIVATE ..)
+add_executable(party-death-test EXCLUDE_FROM_ALL ../tests/test_party_death.cpp)
+target_compile_options(party-death-test PRIVATE -UNDEBUG -Wall -Wextra -Werror)
+target_include_directories(party-death-test PRIVATE ..)
+add_executable(anti-lag-pacer-test EXCLUDE_FROM_ALL ../tests/test_anti_lag_pacer.cpp)
+target_compile_options(anti-lag-pacer-test PRIVATE -UNDEBUG -Wall -Wextra -Werror)
+target_include_directories(anti-lag-pacer-test PRIVATE .)
+add_executable(world-copy-test EXCLUDE_FROM_ALL ../tests/test_world_copy.cpp)
+target_compile_options(world-copy-test PRIVATE -UNDEBUG -Wall -Wextra -Werror)
+target_include_directories(world-copy-test PRIVATE ..)
+add_executable(kept-travel-test EXCLUDE_FROM_ALL ../tests/test_kept_travel.cpp)
+target_compile_options(kept-travel-test PRIVATE -UNDEBUG -Wall -Wextra -Werror)
+target_include_directories(kept-travel-test PRIVATE ..)
 add_executable(rebirth-cost-test EXCLUDE_FROM_ALL ../tests/test_rebirth_cost.cpp)
 target_compile_options(rebirth-cost-test PRIVATE -UNDEBUG -Wall -Wextra -Werror)
 target_include_directories(rebirth-cost-test PRIVATE ..)

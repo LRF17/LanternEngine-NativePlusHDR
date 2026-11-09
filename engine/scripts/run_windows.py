@@ -254,6 +254,8 @@ def main():
         os.environ['BB_FSR411_DIR'] = str(data / 'fsr4_411')
     if 'BB_FSR4VK_DIR' not in os.environ and (ROOT / 'fsr4vk' / 'amd_fidelityfx_upscaler_vk.dll').is_file():
         os.environ['BB_FSR4VK_DIR'] = str(ROOT / 'fsr4vk')
+    if 'BB_FSR_SDK_DIR' not in os.environ and (ROOT / 'fsr_sdk' / 'amd_fidelityfx_loader_vk.dll').is_file():
+        os.environ['BB_FSR_SDK_DIR'] = str(ROOT / 'fsr_sdk')
     remembered = out / 'game_dir.txt'
     if not game and remembered.is_file():
         game = remembered.read_text(encoding='utf-8').strip()
@@ -265,7 +267,23 @@ def main():
     os.environ['BB_GAME_DIR'] = str(original)
     os.environ['BB_RESTART_COMMAND'] = subprocess.list2cmdline([PYTHON, str(Path(__file__).resolve()), *sys.argv[1:]])
 
-    merged = Path(run([PYTHON, SCRIPTS / 'mods.py', original, '--out', out,
+    first_layers = []
+    try:
+        chosen = json.loads(Path(os.environ.get('BB_PATCHES_CONFIG', data / 'patches.json')).read_text(encoding='utf-8'))
+    except (OSError, ValueError):
+        chosen = {}
+    lamp2lamp_bosses = 'Bloodborne.xml/Lamp2Lamp: warp to bosses' in chosen.get('enabled', [])
+    if lamp2lamp_bosses or 'Bloodborne.xml/Lamp2Lamp (warp between lamps)' in chosen.get('enabled', []):
+        try:
+            import engine_assets, mods
+            for name in ('lamp2lamp', 'lamp2lamp-bosses') if lamp2lamp_bosses else ('lamp2lamp',):
+                layer = engine_assets.prepare_lamp2lamp(original, mods.update_folder(original), PACKAGE / 'engine' / f'{name}.bin',
+                                                        data / 'engine-assets')
+                first_layers += ['--first-layer', layer]
+            print('Engine: Lamp2Lamp on', flush=True)
+        except (OSError, RuntimeError, ValueError) as error:
+            print(f'Engine: Lamp2Lamp off: {error}', flush=True)
+    merged = Path(run([PYTHON, SCRIPTS / 'mods.py', original, '--out', out, *first_layers,
                        '--mods-dir', os.environ.get('BB_MODS_DIR', data / 'mods'),
                        '--config', os.environ.get('BB_MODS_CONFIG', data / 'mods.json'),
                        '--enabled', os.environ.get('BB_MODS_ENABLED', '1')], capture=True))
@@ -286,6 +304,14 @@ def main():
         prebuilt = os.environ.get('BB_PREBUILT') == '1'
         if not prebuilt:
             build()
+        scanner = out / 'bb-isa-scan.exe'
+        if not scanner.is_file():
+            sys.exit(f'ISA scanner not found: {scanner}. Rebuild the engine or reinstall its updated package.')
+        scan_env = dict(os.environ)
+        scan_env['PATH'] = os.pathsep.join([str(msys_root() / 'clang64/bin'), scan_env.get('PATH', '')])
+        scan_output = run([scanner, out / 'boot-linked.bin', out], capture=True, env=scan_env)
+        if scan_output:
+            print(scan_output, flush=True)
         for key in ('BB_DREAM_MIRROR_ASSET', 'BB_ENGINE_IMAGE_SHA256', 'BB_PC_MENU_ASSETS', 'BB_REBIRTH_ASSET'):
             os.environ.pop(key, None)
         try:
@@ -358,6 +384,37 @@ def main():
             print(f"Widescreen: UI viewport {info['ui_size']} (the 16:9 stage centred in it)", flush=True)
         else:
             os.environ.pop('BB_UI_SIZE', None)
+        # Widescreen on a screen of another shape: widened copies of the menu movies mounted over
+        # the game's (BB_WIDE_UI_MOVIES) and the PC menus' optionsetting.gfx (BB_WIDE_OPTION_MOVIE),
+        # as bb-start.exe does (start/main.cpp).
+        for key in ('BB_WIDE_UI_MOVIES', 'BB_WIDE_OPTION_MOVIE'):
+            os.environ.pop(key, None)
+        # Only a UI viewport of another shape than 16:9, as bb-start.exe has it.
+        ui = [int(v) for v in os.environ.get('BB_UI_SIZE', '1920x1080').split('x')]
+        wide_ui = ui[0] * 1080 != ui[1] * 1920
+        if wide_ui:
+            from engine_assets import prepare_wide_movies
+            try:
+                width, height = (int(v) for v in os.environ['BB_UI_SIZE'].split('x'))
+                option_movie = None
+                if os.environ.get('BB_PC_MENU_ASSETS'):
+                    prepared = Path(os.environ['BB_PC_MENU_ASSETS']) / 'dvdroot_ps4/menu/optionsetting.gfx'
+                    option_movie = prepared if prepared.is_file() else None
+                movies = prepare_wide_movies(merged, option_movie, data / 'engine-assets',
+                                             out / 'bb-engine-assets.exe', width, height)
+                listing = ''
+                for relative, path, _ in movies:
+                    if option_movie and relative == 'dvdroot_ps4/menu/optionsetting.gfx':
+                        os.environ['BB_WIDE_OPTION_MOVIE'] = str(path)
+                    else:
+                        listing += f'{relative}\t{path}\n'
+                if listing:
+                    (out / 'wide-ui-movies.txt').write_text(listing, encoding='utf-8')
+                    os.environ['BB_WIDE_UI_MOVIES'] = str(out / 'wide-ui-movies.txt')
+                print(f"Widescreen: {len(movies)} menu movies' full-screen dims, fades and bands widened for "
+                      f"{os.environ['BB_UI_SIZE']}", flush=True)
+            except (OSError, ValueError) as error:
+                print(f"Widescreen: the menus' full-screen dims and fades stay 16:9: {error}", flush=True)
         if heaps and 'BB_DMEM_MB' not in os.environ:
             os.environ['BB_DMEM_MB'] = '9152'
             print("Patches: the game's heaps are enlarged; direct memory 9152 MiB", flush=True)

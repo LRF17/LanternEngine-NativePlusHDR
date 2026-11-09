@@ -13,6 +13,7 @@
 #include "bbport_toggles.h"
 #include <cstdio>
 #include <cstdlib>
+#include <vector>
 
 namespace Vulkan {
 SceneTargets::SceneTargets(const Instance& i, Scheduler& s, Runtime& r,
@@ -72,8 +73,9 @@ bool SceneTargets::ShaderResampled(const VideoCore::Image& image) const {
 // Half resolution needs a scene size that halves exactly: the proxy keeps the scene's factor,
 // so the shaders' FragCoord conversion (1920 / scene width) stays correct for it.
 static u32 SizeDivisor(const VideoCore::ImageInfo& i, SceneResolution::Size scene) {
-    if (i.size.width == 1920 && i.size.height == 1080) return 1;
-    if (i.size.width == 960 && i.size.height == 540 && scene.width % 2 == 0 &&
+    const auto native = SceneResolution::Native();
+    if (i.size.width == native.width && i.size.height == native.height) return 1;
+    if (i.size.width == native.width / 2 && i.size.height == native.height / 2 && scene.width % 2 == 0 &&
         scene.height % 2 == 0 && !BbToggle::Disabled(BbToggle::SceneHalfRes)) {
         return 2;
     }
@@ -94,7 +96,8 @@ bool SceneTargets::Eligible(const VideoCore::Image& image) const {
     return Blittable(image.backing->image.image_ci.format) || ShaderResampled(image);
 }
 bool SceneTargets::EligibleScene(const VideoCore::Image& image) const {
-    return image.info.size.width == 1920 && image.info.size.height == 1080 && Eligible(image);
+    const auto native = SceneResolution::Native();
+    return image.info.size.width == native.width && image.info.size.height == native.height && Eligible(image);
 }
 SceneResolution::Size SceneTargets::ProxySize(const VideoCore::Image& image, u32 level) const {
     const u32 div = std::max(1u, SizeDivisor(image.info, size));
@@ -109,8 +112,9 @@ bool SceneTargets::SetSize(SceneResolution::Size next) {
     ++generation;
     recent = {};
     size = next;
-    std::printf("Scene resolution: raster %ux%u, half-resolution targets %ux%u, UI 1920x1080 "
-                "(live)\n", size.width, size.height, size.width / 2, size.height / 2);
+    std::printf("Scene resolution: raster %ux%u, half-resolution targets %ux%u, game targets %ux%u "
+                "(live)\n", size.width, size.height, size.width / 2, size.height / 2,
+                SceneResolution::Native().width, SceneResolution::Native().height);
     return true;
 }
 void SceneTargets::ResolveAll() {
@@ -421,7 +425,42 @@ vk::Pipeline SceneTargets::ResamplePipeline(vk::Format format, bool stencil) {
     resample_pipelines.emplace_back(key, std::move(pipeline));
     return result;
 }
+void SceneTargets::DropForgotten() {
+    const auto uids = releases.Take();
+    if (uids.empty()) {
+        return;
+    }
+    std::vector<std::unique_ptr<Entry>> doomed;
+    for (const u64 uid : uids) {
+        if (!tracked.erase(uid)) {
+            continue;
+        }
+        TakeProxies(entries, uid, 16, Key, doomed);
+    }
+    if (doomed.empty()) {
+        return;
+    }
+    for (auto& slot : recent) {
+        for (const auto& entry : doomed) {
+            if (slot.second == entry.get()) {
+                slot = {};
+            }
+        }
+    }
+    for (const auto& entry : doomed) {
+        released_bytes += entry->image.size_bytes;
+    }
+    released_proxies += doomed.size();
+    scheduler.DeferOperation([doomed = std::move(doomed)]() mutable { doomed.clear(); });
+    if (released_proxies - release_report_proxies >= 256) {
+        release_report_proxies = released_proxies;
+        std::printf("Scene resolution: %llu proxies of freed images released (%llu MiB), %zu live\n",
+                    static_cast<unsigned long long>(released_proxies),
+                    static_cast<unsigned long long>(released_bytes >> 20), entries.size());
+    }
+}
 SceneTargets::Entry& SceneTargets::Get(VideoCore::ImageId id, u32 level) {
+    DropForgotten();
     auto& original = *lookup(id, 0);
     const u64 key = Key(original.image_uid, level);
     // A draw has up to six targets, mostly the same as the previous draw's.

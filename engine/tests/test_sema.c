@@ -1,5 +1,7 @@
 #define _GNU_SOURCE
+#include "sys/sys.h"
 #include "runtime.h"
+#include "sys/sys.h"
 #include <stdlib.h>
 
 void runtime_restart(void) { abort(); }
@@ -15,14 +17,14 @@ typedef int32_t (ABI *CountOp)(uint32_t,int32_t);
 typedef int32_t (ABI *Wait)(uint32_t,int32_t,uint32_t *);
 typedef int32_t (ABI *Delete)(uint32_t);
 typedef int32_t (ABI *Cancel)(uint32_t,int32_t,int32_t *);
-#define GET(t,n) ((t)runtime_resolve(n,0))
+#define GET(t,n) ((t)sys_import_resolve(n,0))
 static Create create;
 static CountOp poll_sem,signal_sem;
 static Wait wait_sem;
 static Delete delete_sem;
 static Cancel cancel_sem;
 static void setup(void) {
-    runtime_start(1);
+    sys_imports_start(1);
     create=GET(Create,"188x57JYp0g#p#J");
     poll_sem=GET(CountOp,"12wOHk8ywb0#p#J");
     signal_sem=GET(CountOp,"4czppHBiriw#p#J");
@@ -30,8 +32,8 @@ static void setup(void) {
     delete_sem=GET(Delete,"R1Jvn8bSCW8#p#J");
     cancel_sem=GET(Cancel,"4DM06U2BNEY#p#J");
     assert(create && poll_sem && signal_sem && wait_sem && delete_sem && cancel_sem);
-    assert(!runtime_resolve("188x57JYp0g#I#J",0));
-    assert(!runtime_resolve("188x57JYp0g#p#J",1));
+    assert(!sys_import_resolve("AAAAAAAAAAA#p#J",0));
+    assert(!sys_import_resolve("188x57JYp0g#p#J",1));
 }
 static void lifecycle(void) {
     struct { uint32_t handle,canary; } s={0,0xdeadbeef};
@@ -59,7 +61,7 @@ static void lifecycle(void) {
     assert((uint32_t)poll_sem(old,1)==0x80020003);
     timeout=1000;
     assert((uint32_t)wait_sem(s.handle,1,&timeout)==0x8002003c && timeout==0);
-    assert(runtime_sema_waiters(s.handle)==0);
+    assert(sys_sema_waiters(s.handle)==0);
     assert(signal_sem(s.handle,1)==0 && poll_sem(s.handle,1)==0);
     assert(delete_sem(s.handle)==0);
 }
@@ -68,7 +70,7 @@ static void *waiter(void *p) { Task *t=p; t->result=wait_sem(t->id,t->need,&t->t
 static void enrolled(uint32_t id,unsigned count) {
     const struct timespec nap={0,1000000};
     for (int i=0;i<2000;++i) {
-        if (runtime_sema_waiters(id)==count) return;
+        if (sys_sema_waiters(id)==count) return;
         nanosleep(&nap,NULL);
     }
     assert(!"waiter enrollment timed out");
@@ -82,7 +84,7 @@ static void concurrency(void) {
     assert(pthread_create(&second,NULL,waiter,&b)==0); enrolled(id,2);
     assert(signal_sem(id,1)==0);
     assert(pthread_join(first,NULL)==0 && a.result==0 && a.timeout<=5000000);
-    assert(runtime_sema_waiters(id)==1 && (uint32_t)poll_sem(id,1)==0x80020010);
+    assert(sys_sema_waiters(id)==1 && (uint32_t)poll_sem(id,1)==0x80020010);
     assert(signal_sem(id,1)==0);
     assert(pthread_join(second,NULL)==0 && b.result==0);
     a=(Task){id,2,99,5000000}; b=(Task){id,1,99,5000000};
@@ -90,7 +92,7 @@ static void concurrency(void) {
     assert(pthread_create(&second,NULL,waiter,&b)==0); enrolled(id,2);
     assert(signal_sem(id,1)==0);
     assert(pthread_join(second,NULL)==0 && b.result==0);
-    assert(runtime_sema_waiters(id)==1);
+    assert(sys_sema_waiters(id)==1);
     assert(signal_sem(id,2)==0);
     assert(pthread_join(first,NULL)==0 && a.result==0);
     assert(delete_sem(id)==0);

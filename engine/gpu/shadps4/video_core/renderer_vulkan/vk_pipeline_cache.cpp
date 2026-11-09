@@ -10,12 +10,15 @@
 #include <string>
 #include <unordered_set>
 
+#include "engine/gx_records.h"
+#include "bbport_sections.h"
 #include "common/hash.h"
 #include "common/elf_info.h"
 #include "common/io_file.h"
 #include "common/path_util.h"
 #include "core/debug_state.h"
 #include "core/emulator_settings.h"
+#include "lifter/bridge.h"
 #include "shader_recompiler/backend/spirv/emit_spirv.h"
 #include "shader_recompiler/info.h"
 #include "shader_recompiler/recompiler.h"
@@ -26,6 +29,7 @@
 #include "video_core/cache_file.h"
 #include "video_core/renderer_vulkan/pipeline_cache_blob.h"
 #include "video_core/renderer_vulkan/liverpool_to_vk.h"
+#include "video_core/renderer_vulkan/vk_effect_shaders.h"
 #include "video_core/renderer_vulkan/motion_history.h"
 #include "video_core/renderer_vulkan/vk_draw_prep.h"
 #include "video_core/renderer_vulkan/vk_instance.h"
@@ -280,7 +284,8 @@ const Shader::RuntimeInfo& PipelineCache::BuildRuntimeInfo(PipelineSelection& se
             !instance.IsDepthClipControlSupported() &&
             regs.clipper_control.clip_space == AmdGpu::ClipSpace::MinusWToW;
         info.hw.vs.clip_disable = regs.IsClipDisabled();
-        info.hw.vs.motion_vectors = sel.motion;
+        info.hw.vs.motion_vectors =
+            u8((sel.capture ? Shader::MotionVectors::VertexCapture : 0) | (sel.motion ? 1 : 0));
         break;
     }
     case HwStage::Fragment: {
@@ -588,7 +593,10 @@ const GraphicsPipeline* PipelineCache::TryPreparedPipeline(const PreparedDraw& p
         auto& info = const_cast<Program*>(stage.program)->info;
         info.pgm_base = params.Base();
         info.user_data = params.user_data;
-        info.RefreshFlatBuf();
+        {
+            BbSections::ScopeA tables_scope{BbSections::ATables};
+            info.RefreshFlatBuf();
+        }
         if (info.pgm_base != stage.pgm_base || info.flattened_ud_buf.size() != stage.flat_size ||
             std::memcmp(info.flattened_ud_buf.data(), stage.flat,
                         stage.flat_size * sizeof(u32)) != 0) {
@@ -599,19 +607,100 @@ const GraphicsPipeline* PipelineCache::TryPreparedPipeline(const PreparedDraw& p
     return it != graphics_pipelines.end() ? it->second.get() : nullptr;
 }
 
+bool PipelineCache::RestoreGxPipeline(const GxPipeline& memo, bool from_record) {
+    const auto& regs = liverpool->regs;
+    if (regs.stage_enable.raw != AmdGpu::ShaderStageEnable::VgtStages::Vs) {
+        return false;
+    }
+    const auto restore = [&](Shader::Info* info, HwStage stage, u32 bit) {
+        if (!info) {
+            return true;
+        }
+        const auto* pgm = regs.ProgramForStage(static_cast<u32>(stage));
+        if (!pgm || !pgm->Address<u32*>()) {
+            return false;
+        }
+        info->pgm_base = reinterpret_cast<VAddr>(pgm->Address<u32*>());
+        info->user_data = pgm->user_data;
+        if (from_record && info->table_plan.valid && !info->tables_pending &&
+            info->table_plan.flat_dwords == info->srt_info.flattened_bufsize_dw) {
+            info->flattened_ud_buf.resize(info->srt_info.flattened_bufsize_dw);
+            std::memcpy(info->flattened_ud_buf.data(), info->user_data.data(), info->user_data.size_bytes());
+            gx_unfilled |= bit;
+        } else {
+            info->RefreshFlatBuf();
+        }
+        return true;
+    };
+    return restore(memo.vertex, HwStage::Vertex, 1) && restore(memo.fragment, HwStage::Fragment, 2);
+}
+
+void PipelineCache::NoteGxRecords() {
+    if (((gx_hits + gx_misses + gx_none) & 0xfffff) != 0xfffff) {
+        return;
+    }
+    std::printf("GX records: pipelines %llu from the record, %llu from the registers and remembered, %llu with no record, "
+                "%zu remembered%s%llu differ\n",
+                static_cast<unsigned long long>(gx_hits), static_cast<unsigned long long>(gx_misses),
+                static_cast<unsigned long long>(gx_none), gx_pipelines.size(),
+                BbEngine::GxRecords::Checked() ? ", checked: " : ", unchecked: ",
+                static_cast<unsigned long long>(gx_differ));
+    std::fflush(stdout);
+}
+
 const GraphicsPipeline* PipelineCache::GetGraphicsPipeline(const DrawIndirectParams params,
-                                                           const PreparedDraw* prepared) {
+                                                           const PreparedDraw* prepared,
+                                                           u64 gx_record) {
     used_prepared = nullptr;
-    if (prepared) {
+    gx_unfilled = 0;
+    const bool gx_use = BbEngine::GxRecords::Used() && gx_record && gx_pipelines.contains(gx_record);
+    if (prepared && !gx_use) {
+        BbSections::ScopeA prepared_scope{BbSections::APrepared};
         if (const auto* pipeline = TryPreparedPipeline(*prepared)) {
             used_prepared = prepared;
             return pipeline;
         }
     }
+    const GraphicsPipeline* gx_expected = nullptr;
+    if (BbEngine::GxRecords::On()) {
+        if (!gx_record) {
+            ++gx_none;
+        } else if (const auto memo = gx_pipelines.find(gx_record); memo != gx_pipelines.end()) {
+            ++gx_hits;
+            NoteGxRecords();
+            if (BbEngine::GxRecords::Checked()) {
+                gx_expected = memo->second.pipeline;
+            } else if (RestoreGxPipeline(memo->second, gx_use)) {
+                return memo->second.pipeline;
+            }
+        } else {
+            ++gx_misses;
+            NoteGxRecords();
+        }
+    }
+    gx_unfilled = 0;
+    BbSections::ScopeA key_scope{BbSections::AKey};
     sel.draw_indirect_params = params;
     if (!RefreshGraphicsKey(sel)) {
         return nullptr;
     }
+    const auto remember = [&](const GraphicsPipeline* pipeline) {
+        if (gx_expected && gx_expected != pipeline) {
+            ++gx_differ;
+            std::printf("GX records: a record chose another pipeline than the registers (%llu so far)\n",
+                        static_cast<unsigned long long>(gx_differ));
+        }
+        if (gx_record && !gx_expected &&
+            liverpool->regs.stage_enable.raw == AmdGpu::ShaderStageEnable::VgtStages::Vs) {
+            if (gx_pipelines.size() >= (1u << 18)) {
+                gx_pipelines.clear();
+            }
+            gx_pipelines[gx_record] = {pipeline,
+                                       const_cast<Shader::Info*>(sel.infos[static_cast<u32>(SwStage::Vertex)]),
+                                       const_cast<Shader::Info*>(sel.infos[static_cast<u32>(SwStage::Fragment)])};
+        }
+        return pipeline;
+    };
     const auto [it, is_new] = graphics_pipelines.try_emplace(sel.graphics_key);
     if (is_new) {
         const auto pipeline_hash = std::hash<GraphicsPipelineKey>{}(sel.graphics_key);
@@ -637,7 +726,7 @@ const GraphicsPipeline* PipelineCache::GetGraphicsPipeline(const DrawIndirectPar
         }
         sel.fetch_shader.reset();
     }
-    return it->second.get();
+    return remember(it->second.get());
 }
 
 const ComputePipeline* PipelineCache::GetComputePipeline() {
@@ -709,6 +798,16 @@ bool PipelineCache::RefreshGraphicsKey(PipelineSelection& sel) {
                           regs.stage_enable.raw == AmdGpu::ShaderStageEnable::VgtStages::Vs;
     }
     sel.motion = false;
+    sel.capture = false;
+    if (position_capture) {
+        u32 bound = 0;
+        for (s32 cb = 0; cb < AmdGpu::NUM_COLOR_BUFFERS && !skip_cb_binding; ++cb) {
+            bound += (regs.color_buffers[cb] && regs.color_target_mask.GetMask(cb)) ? 1 : 0;
+        }
+        sel.capture = (bound == 0 || bound >= 5) && regs.depth_buffer.DepthValid() &&
+                      regs.depth_buffer.NumSamples() == 1 && !regs.IsClipDisabled() &&
+                      regs.stage_enable.raw == AmdGpu::ShaderStageEnable::VgtStages::Vs;
+    }
 
     // First pass to fill render target information needed by shader recompiler
     for (s32 cb = 0; cb < AmdGpu::NUM_COLOR_BUFFERS && !skip_cb_binding; ++cb) {
@@ -820,9 +919,12 @@ bool PipelineCache::RefreshGraphicsKey(PipelineSelection& sel) {
         key.num_samples = std::max(key.num_samples, color_samples);
     }
 
+    if (sel.capture) {
+        key.motion_vectors = Shader::MotionVectors::VertexCapture;
+    }
     if (sel.motion) {
         constexpr u32 mv = Shader::MotionVectors::Output;
-        key.motion_vectors = 1;
+        key.motion_vectors |= 1;
         key.mrt_mask |= 1u << mv;
         key.num_color_attachments = mv + 1;
         auto& color_buffer = key.color_buffers[mv];
@@ -992,16 +1094,31 @@ vk::ShaderModule PipelineCache::CompileModule(Shader::Info& info, Shader::Runtim
     const auto ir_program = Shader::TranslateProgram(code, pools, info, runtime_info, profile);
     Shader::Native::Capture(info, runtime_before, code, profile);
     Shader::Native::StoreState(info, runtime_before, code, perm_idx);
+    const auto binding_before = binding;
     auto spv = Shader::Backend::SPIRV::EmitSPIRV(profile, runtime_info, ir_program, binding);
+    if (Lifter::GetMode() != Lifter::Mode::Off && !EffectShaders::KeepRecompiled(info)) {
+        auto lifted = Lifter::Lift(Lifter::MakeInput(info, runtime_before, profile, binding_before, code));
+        if (lifted.ok() && lifted.uses_tone_curve == info.uses_tone_curve) {
+            spv = std::move(lifted.spirv);
+        } else {
+            LOG_INFO(Render_Vulkan, "Lifter declined {:#x}: {}", info.pgm_hash, lifted.decline);
+        }
+    }
     DumpShader(spv, info.pgm_hash, info.hw_stage, perm_idx, "spv");
 
     vk::ShaderModule module;
 
     auto patch = GetShaderPatch(info.pgm_hash, info.hw_stage, perm_idx, "spv");
     const bool is_patched = patch && EmulatorSettings.IsPatchShaders();
+    const auto effect_shader = EffectShaders::Replacement(info, profile, binding_before);
+    const auto effect_patch = effect_shader.empty() ? EffectShaders::Patched(info, spv) : std::nullopt;
     if (is_patched) {
         LOG_INFO(Loader, "Loaded patch for {} shader {:#x}", info.hw_stage, info.pgm_hash);
         module = CompileSPV(*patch, instance.GetDevice());
+    } else if (!effect_shader.empty()) {
+        module = CompileSPV(effect_shader, instance.GetDevice());
+    } else if (effect_patch) {
+        module = CompileSPV(*effect_patch, instance.GetDevice());
     } else {
         module = CompileSPV(spv, instance.GetDevice());
     }

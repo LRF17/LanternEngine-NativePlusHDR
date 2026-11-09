@@ -5,10 +5,14 @@
 #include "thd_internal.h"
 
 #include <atomic>
+#include <condition_variable>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
+#include <deque>
 #include <map>
 #include <mutex>
+#include <thread>
 #include <unordered_map>
 #include <vector>
 
@@ -85,48 +89,154 @@ s32 PS4_SYSV_ABI sig_delete_ctx(unsigned ctx) {
     for (auto it = g_conn.begin(); it != g_conn.end();) it = it->second.ctx == ctx ? g_conn.erase(it) : std::next(it);
     return 0;
 }
+std::atomic<std::int64_t> g_resolve_at{0};
+
+bool RoomBackend() {
+    static const bool room = [] {
+        const char* v = std::getenv("BB_NET_BACKEND");
+        return v && std::strcmp(v, "room") == 0;
+    }();
+    return room;
+}
+
+// Asks the server for the peer's address: an HTTPS round trip, so never on the game's thread.
+// `first` is the try sig_activate starts; later ones come from status reads.
+void RetryResolve(unsigned conn, const std::string& peer, bool force, bool first = false) {
+    const std::int64_t now = NowMs();
+    if (!force && now - g_resolve_at.load() < 2000) return;
+    g_resolve_at = now;
+    Peer known;
+    if (PeersFindOnline(peer, &known)) {
+        std::lock_guard lk(g_sig_mu);
+        const auto it = g_conn.find(conn);
+        if (it != g_conn.end() && !it->second.dead && !it->second.member_id) {
+            it->second.member_id = known.member_id;
+            announce_locked(conn, it->second);
+        }
+        return;
+    }
+    std::uint32_t addr = 0;
+    std::uint16_t port = 0;
+    std::string error;
+    if (!ServerSignalingResolve(peer, &addr, &port, error)) {
+        if (first) Log("signaling: %s not known and not resolved: %s", peer.c_str(), error.c_str());
+        return;
+    }
+    // The connection may have gone while the request ran (deactivated, or the room left and
+    // SignalingReset): then the peer stays out of the peer table and nothing is announced.
+    // g_sig_mu before the peer table's lock, as sig_activate has always taken them.
+    std::lock_guard lk(g_sig_mu);
+    const auto it = g_conn.find(conn);
+    if (it == g_conn.end() || it->second.dead || it->second.member_id) return;
+    it->second.member_id = PeersProvisional(peer, addr, port).member_id;
+    const auto ms = static_cast<long long>(NowMs() - now);
+    if (first) Log("signaling: %s resolved (%s:%u) in %lld ms", peer.c_str(), BbNet::MaskIpv4(addr).c_str(), port, ms);
+    else Log("signaling: %s found on a later try (%s:%u) in %lld ms", peer.c_str(), BbNet::MaskIpv4(addr).c_str(), port, ms);
+    announce_locked(conn, it->second);
+}
+
+// One long-lived thread runs the resolves in turn. NpPost keeps its HTTPS connection per thread,
+// so this one stays open between peers: a thread per resolve paid a new TCP and TLS handshake
+// each time (~500 ms instead of ~270). The thread starts with the first resolve (online play).
+struct ResolveJob {
+    unsigned conn;
+    std::string peer;
+    bool first;
+};
+std::mutex g_rq_mu;
+std::condition_variable g_rq_cv;
+std::deque<ResolveJob> g_rq;
+bool g_rq_running = false;
+
+void ResolveWorker() {
+    for (;;) {
+        ResolveJob job;
+        {
+            std::unique_lock lk(g_rq_mu);
+            g_rq_cv.wait(lk, [] { return !g_rq.empty(); });
+            job = std::move(g_rq.front());
+            g_rq.pop_front();
+        }
+        RetryResolve(job.conn, job.peer, true, job.first);
+    }
+}
+
+void QueueResolve(unsigned conn, const std::string& peer, bool first = false) {
+    std::lock_guard lk(g_rq_mu);
+    for (const ResolveJob& j : g_rq) {
+        if (j.conn == conn) return; // already waiting its turn
+    }
+    g_rq.push_back({conn, peer, first});
+    if (!g_rq_running) {
+        g_rq_running = true;
+        std::thread(ResolveWorker).detach();
+    }
+    g_rq_cv.notify_one();
+}
+
 // Idempotent per peer: the game re-activates.
 s32 PS4_SYSV_ABI sig_activate(unsigned ctx, const void* npid, unsigned* conn_out) {
     if (!conn_out) return kSigErrInvalidArg;
     const std::string peer = NpIdText(npid);
-    std::lock_guard lk(g_sig_mu);
-    for (auto& [id, c] : g_conn) {
-        if (c.ctx == ctx && c.online_id == peer && !c.dead) {
-            *conn_out = id;
-            if (!c.member_id) {
-                Peer p;
-                if (PeersFindOnline(peer, &p)) c.member_id = p.member_id;
+    unsigned retry = 0;
+    std::uint32_t fresh_addr = 0;
+    std::uint16_t fresh_port = 0;
+    if (RoomBackend()) {
+        std::string error;
+        Peer cached;
+        if (ServerSignalingResolve(peer, &fresh_addr, &fresh_port, error) && PeersFindOnline(peer, &cached) &&
+            (cached.addr != fresh_addr || cached.port != fresh_port)) {
+            Log("signaling: %s came back at a new address; the old one is dropped", peer.c_str());
+            {
+                std::lock_guard lk(g_sig_mu);
+                for (auto& [id, c] : g_conn)
+                    if (c.online_id == peer) c.dead = true;
             }
-            announce_locked(id, c);
-            return 0;
+            if (cached.member_id >= 0xff00) PeersProvisional(peer, fresh_addr, fresh_port);
+            else PeersErase(cached.member_id);
         }
     }
+    {
+        std::lock_guard lk(g_sig_mu);
+        for (auto& [id, c] : g_conn) {
+            if (c.ctx == ctx && c.online_id == peer && !c.dead) {
+                *conn_out = id;
+                if (!c.member_id) {
+                    Peer p;
+                    if (PeersFindOnline(peer, &p)) c.member_id = p.member_id;
+                }
+                announce_locked(id, c);
+                if (!c.member_id) retry = id;
+                else return 0;
+                break;
+            }
+        }
+    }
+    if (retry) {
+        QueueResolve(retry, peer);
+        return 0;
+    }
+    std::lock_guard lk(g_sig_mu);
     const unsigned id = g_next_conn++;
     Conn c;
     c.ctx = ctx;
     c.online_id = peer;
     Peer p;
     if (PeersFindOnline(peer, &p)) c.member_id = p.member_id;
-    std::string how;
-    if (!c.member_id) {
-        // The host activates its connection to the guest it summons before the guest is a room
-        // member: the server resolves the address from the guest's context_start.
-        std::uint32_t addr = 0;
-        std::uint16_t port = 0;
-        std::string error;
-        if (ServerSignalingResolve(peer, &addr, &port, error)) {
-            c.member_id = PeersProvisional(peer, addr, port).member_id;
-            char text[64];
-            std::snprintf(text, sizeof(text), " (resolved %u.%u.%u.%u:%u)", addr & 0xff, (addr >> 8) & 0xff,
-                          (addr >> 16) & 0xff, addr >> 24, port);
-            how = text;
-        } else {
-            how = " (not known and not resolved: " + error + ")";
-        }
-    }
     g_conn[id] = c;
     *conn_out = id;
-    Log("sceNpSignalingActivateConnection %s -> conn %u%s", peer.c_str(), id, how.c_str());
+    if (!c.member_id) {
+        // The host activates its connection to the guest it summons before the guest is a room
+        // member: the server resolves the address from the guest's context_start. That request
+        // blocked the game's frame for a server round trip (~270 ms) with every new peer; it now
+        // runs beside the game, the status read answers "pending" meanwhile, and the connection
+        // is announced when the address arrives, as for a peer resolved on a later try.
+        Log("sceNpSignalingActivateConnection %s -> conn %u (resolving)", peer.c_str(), id);
+        g_resolve_at = NowMs(); // the game's status reads right after do not start a second one
+        QueueResolve(id, peer, true);
+        return 0;
+    }
+    Log("sceNpSignalingActivateConnection %s -> conn %u", peer.c_str(), id);
     announce_locked(id, g_conn[id]);
     return 0;
 }
@@ -144,6 +254,7 @@ s32 PS4_SYSV_ABI sig_status(unsigned ctx, unsigned conn, int* st, std::uint32_t*
     int status = 0;
     std::uint32_t a = 0;
     std::uint16_t p = 0;
+    std::string unresolved;
     {
         std::lock_guard lk(g_sig_mu);
         const auto it = g_conn.find(conn);
@@ -155,8 +266,13 @@ s32 PS4_SYSV_ABI sig_status(unsigned ctx, unsigned conn, int* st, std::uint32_t*
                 p = static_cast<std::uint16_t>((peer.port << 8) | (peer.port >> 8));
             } else {
                 status = 1;
+                if (!it->second.member_id) unresolved = it->second.online_id;
             }
         }
+    }
+    if (!unresolved.empty() && NowMs() - g_resolve_at.load() >= 2000) {
+        g_resolve_at = NowMs();
+        QueueResolve(conn, unresolved);
     }
     if (st) *st = status;
     if (addr) *addr = a;

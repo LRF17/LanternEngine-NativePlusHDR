@@ -1,4 +1,4 @@
-using System.Diagnostics;
+﻿using System.Diagnostics;
 using System.IO;
 using System.IO.Compression;
 using System.Net.Http;
@@ -28,7 +28,7 @@ namespace BloodborneLauncher.Core
 
         /// <summary>The engine build this launcher is made for (package.json "engine"). A release whose
         /// engine changed needs a new one: with the same, the updater replaces the launcher alone.</summary>
-        public const string EngineId = "lantern-fps95-nativeplus-v4";
+        public const string EngineId = "lantern-fps95-nativeplus-v8";
 
         public const string ExeName = "Lantern Engine.exe";
         /// <summary>The launcher's name before 0.9.34 beta 8 (now a forwarder to ExeName).</summary>
@@ -144,7 +144,7 @@ namespace BloodborneLauncher.Core
         /// Stable: GitHub's latest release. Beta: the newest of all releases, pre-releases included.</summary>
         public static async Task<Release?> LatestAsync(bool beta = false)
         {
-            using var http = Client(TimeSpan.FromSeconds(10));
+            using var http = Client(TimeSpan.FromSeconds(20));
             using var response = await http.GetAsync(beta
                 ? $"https://api.github.com/repos/{Repository}/releases?per_page=30"
                 : $"https://api.github.com/repos/{Repository}/releases/latest");
@@ -450,6 +450,39 @@ namespace BloodborneLauncher.Core
             }
         }
 
+        private static readonly string[] OldEngineFiles =
+        {
+            "boot.bin", "boot-libc.bin", "analysis.json", "link.json", "libc-link.json", "entry.bin",
+            "content-profile.json", "patches-info.json",
+            // Native+ HDR packages before 0.9.40.1 shipped a Vulkan loader in engine\out; an update
+            // copies over and would keep it in place of the GPU driver's, as Lantern's package has.
+            "vulkan-1.dll",
+        };
+
+        private static readonly string[] OldEngineFolders = { "scripts", "tools", "fsr4_shaders" };
+
+        public static int CleanOldFiles(LauncherSettings s, string package)
+        {
+            const string marker = "cleaned_for_engine";
+            if (s.Str(marker) == EngineId || !Directory.Exists(Path.Combine(package, "engine", "out")) ||
+                !File.Exists(Path.Combine(package, "engine", "out", "bb-start.exe")) ||
+                Process.GetProcessesByName("bb-probe").Length > 0)
+                return 0;
+            var removed = 0;
+            foreach (var name in OldEngineFiles)
+            {
+                var file = Path.Combine(package, "engine", "out", name);
+                try { if (File.Exists(file)) { File.Delete(file); removed++; } } catch (Exception) { }
+            }
+            foreach (var name in OldEngineFolders)
+            {
+                var folder = Path.Combine(package, "engine", name);
+                try { if (Directory.Exists(folder)) { Directory.Delete(folder, recursive: true); removed++; } } catch (Exception) { }
+            }
+            s.Set(marker, EngineId);
+            return removed;
+        }
+
         private static void ReplaceSelf(string self, string replacement)
         {
             var aside = self + ".old";
@@ -466,7 +499,7 @@ namespace BloodborneLauncher.Core
             }
         }
 
-        private static async Task DownloadAsync(string url, string path, long expected, IProgress<double>? progress, string? sha256 = null)
+        internal static async Task DownloadAsync(string url, string path, long expected, IProgress<double>? progress, string? sha256 = null)
         {
             using var http = Client(TimeSpan.FromMinutes(30));
             using var response = await http.GetAsync(url, HttpCompletionOption.ResponseHeadersRead);
@@ -502,8 +535,14 @@ namespace BloodborneLauncher.Core
         {
             try
             {
-                if (Environment.ProcessPath is { } self && File.Exists(self + ".old"))
-                    File.Delete(self + ".old");
+                if (Environment.ProcessPath is { } self)
+                {
+                    if (File.Exists(self + ".old"))
+                        File.Delete(self + ".old");
+                    var oldName = Path.Combine(Path.GetDirectoryName(self)!, OldExeName + ".old");
+                    if (File.Exists(oldName))
+                        File.Delete(oldName);
+                }
             }
             catch
             {

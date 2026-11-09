@@ -9,6 +9,7 @@
 
 #include <windows.h>
 
+#include <cpuid.h>
 #include <nlohmann/json.hpp>
 
 #include <algorithm>
@@ -42,6 +43,20 @@ Folders Locate() {
                     ? f.engine.parent_path()
                     : f.engine;
     return f;
+}
+
+std::optional<std::string> PlateTitle(const std::map<std::string, std::string>& settings, const char* key) {
+    const auto set = Setting(settings, key);
+    if (!set) return std::optional<std::string>(std::string());
+    std::string title;
+    for (const char c : *set)
+        if (std::uint8_t(c) >= 0x20 && c != 0x7f) title.push_back(c);
+    if (title.size() > 48) {
+        title.resize(48);
+        while (!title.empty() && (std::uint8_t(title.back()) & 0xc0) == 0x80) title.pop_back();
+        if (!title.empty() && std::uint8_t(title.back()) >= 0xc0) title.pop_back();
+    }
+    return title;
 }
 
 std::optional<std::string> SettingValue(const fs::path& config, const std::string& key) {
@@ -265,7 +280,46 @@ int RunProbe(const fs::path& probe, const std::vector<std::wstring>& arguments, 
     return int(code);
 }
 
+bool CpuNeedsIsaRewrite() {
+    unsigned a = 0, b = 0, c = 0, d = 0;
+    if (!__get_cpuid(1, &a, &b, &c, &d)) return true;
+    const bool movbe = (c & bit_MOVBE) != 0;
+    if (!__get_cpuid_count(7, 0, &a, &b, &c, &d)) return true;
+    const bool bmi1 = (b & bit_BMI) != 0;
+    if (!__get_cpuid(0x80000001u, &a, &b, &c, &d)) return true;
+    const bool lzcnt = (c & bit_LZCNT) != 0;
+    return !(movbe && bmi1 && lzcnt);
+}
+
+void WaitForPreviousStart() {
+    const auto previous = Env("BB_START_PID");
+    SetEnv("BB_START_PID", std::to_string(GetCurrentProcessId()));
+    if (!previous) return;
+    const DWORD pid = DWORD(std::strtoul(previous->c_str(), nullptr, 10));
+    if (!pid || pid == GetCurrentProcessId()) return;
+    HANDLE process = OpenProcess(SYNCHRONIZE | PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid);
+    if (!process) return;
+    wchar_t name[32768];
+    DWORD size = DWORD(std::size(name));
+    FILETIME theirs{}, ours{}, unused{};
+    const bool older = GetProcessTimes(process, &theirs, &unused, &unused, &unused) &&
+                       GetProcessTimes(GetCurrentProcess(), &ours, &unused, &unused, &unused) &&
+                       CompareFileTime(&theirs, &ours) < 0;
+    const bool same = older && QueryFullProcessImageNameW(process, 0, name, &size) &&
+                      _wcsicmp(fs::path(std::wstring(name, size)).filename().c_str(), SelfPath().filename().c_str()) == 0;
+    if (same) {
+        const auto start = std::chrono::steady_clock::now();
+        const DWORD result = WaitForSingleObject(process, 60000);
+        const double seconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();
+        Log(result == WAIT_OBJECT_0 ? "Restart: the previous start ended (waited %.1f s)"
+                                    : "Restart: the previous start is still running after %.1f s; starting anyway",
+            seconds);
+    }
+    CloseHandle(process);
+}
+
 int Main(std::vector<std::wstring> arguments) {
+    WaitForPreviousStart();
     const Folders folders = Locate();
     std::optional<std::string> game = Env("BB_GAME_DIR");
     if (arguments.size() > 1 && arguments[0] == L"--game-dir") {
@@ -328,6 +382,8 @@ int Main(std::vector<std::wstring> arguments) {
         SetEnv("BB_FSR411_DIR", Utf8(data / "fsr4_411"));
     if (!Env("BB_FSR4VK_DIR") && fs::is_regular_file(folders.engine / "fsr4vk" / "amd_fidelityfx_upscaler_vk.dll", error))
         SetEnv("BB_FSR4VK_DIR", Utf8(folders.engine / "fsr4vk"));
+    if (!Env("BB_FSR_SDK_DIR") && fs::is_regular_file(folders.engine / "fsr_sdk" / "amd_fidelityfx_loader_vk.dll", error))
+        SetEnv("BB_FSR_SDK_DIR", Utf8(folders.engine / "fsr_sdk"));
     const fs::path remembered = out / "game_dir.txt";
     if ((!game || game->empty()) && fs::is_regular_file(remembered, error)) game = Trim(ReadText(remembered));
     const fs::path game_dir = game && !game->empty() ? Path(*game) : folders.package.parent_path() / "CUSA03173";
@@ -346,8 +402,36 @@ int Main(std::vector<std::wstring> arguments) {
 
     fs::path merged;
     try {
+        const bool own_font = fs::is_regular_file(original / "dvdroot_ps4" / "font" / "DbgFont14h.ccm", error) &&
+                              fs::is_regular_file(original / "dvdroot_ps4" / "font" / "DbgFont14h.tpf", error);
+        const bool debug_font = Setting(settings, "debug_menu") == "1" && !own_font && fs::is_directory(folders.engine / "debug-font", error);
+        std::vector<fs::path> first_layers;
+        if (debug_font) first_layers.push_back(folders.engine / "debug-font");
+        bool lamp2lamp = false, lamp2lamp_bosses = false;
+        try {
+            const auto chosen = nlohmann::json::parse(ReadText(Path(Env("BB_PATCHES_CONFIG", Utf8(data / "patches.json")))));
+            if (chosen.contains("enabled"))
+                for (const auto& key : chosen.at("enabled")) {
+                    lamp2lamp = lamp2lamp || key == "Bloodborne.xml/Lamp2Lamp (warp between lamps)";
+                    lamp2lamp_bosses = lamp2lamp_bosses || key == "Bloodborne.xml/Lamp2Lamp: warp to bosses";
+                }
+        } catch (const std::exception&) {
+        }
+        if (lamp2lamp || lamp2lamp_bosses) {
+            try {
+                const auto update = GameUpdateFolder(original);
+                const fs::path core = PrepareLamp2Lamp(original, update, folders.engine / "lamp2lamp.bin", data / "engine-assets");
+                const fs::path bosses = lamp2lamp_bosses ? PrepareLamp2Lamp(original, update, folders.engine / "lamp2lamp-bosses.bin", data / "engine-assets") : fs::path();
+                first_layers.push_back(core);
+                if (lamp2lamp_bosses) first_layers.push_back(bosses);
+                Log("Engine: Lamp2Lamp on%s", lamp2lamp_bosses ? ", with warps to bosses" : "");
+            } catch (const std::exception& e) {
+                Log("Engine: Lamp2Lamp off: %s", e.what());
+            }
+        }
         merged = BuildModsOverlay(original, out, Path(Env("BB_MODS_DIR", Utf8(data / "mods"))),
-                                  Path(Env("BB_MODS_CONFIG", Utf8(data / "mods.json"))), Env("BB_MODS_ENABLED", "1") == "1");
+                                  Path(Env("BB_MODS_CONFIG", Utf8(data / "mods.json"))), Env("BB_MODS_ENABLED", "1") == "1",
+                                  first_layers);
     } catch (const std::exception& e) {
         Log("Mods: %s", e.what());
         return 1;
@@ -384,6 +468,15 @@ int Main(std::vector<std::wstring> arguments) {
 
     try {
         PrepareImage(merged, out, folders.engine);
+        if (CpuNeedsIsaRewrite()) {
+            std::string isa_scan_output;
+            const int isa_scan_status = RunProgram(out / "bb-isa-scan.exe",
+                                                   {(out / "boot-linked.bin").native(), out.native()},
+                                                   &isa_scan_output);
+            if (isa_scan_status != 0)
+                throw Error("ISA scan failed (exit " + std::to_string(isa_scan_status) + "): " + Trim(isa_scan_output));
+            if (!Trim(isa_scan_output).empty()) Log("%s", Trim(isa_scan_output).c_str());
+        }
     } catch (const GameCheckError& e) {
         Log("\nUnsupported game files: %s\nSet BB_SKIP_GAME_CHECK=1 to start anyway.", e.what());
         return 2;
@@ -423,11 +516,21 @@ int Main(std::vector<std::wstring> arguments) {
                 Log("Engine: Dream mirror skipped: %s", e.what());
             }
         }
+        if (Setting(settings, "ui_4k") != "0") {
+            std::error_code ui_error;
+            const fs::path ui = data / "engine-assets" / "ui-4k";
+            if (fs::is_regular_file(ui / "complete", ui_error)) {
+                SetEnv("BB_UI_4K", Utf8(ui));
+                Log("Engine: 4K menu textures from %s", Utf8(ui).c_str());
+            }
+        }
         if (is_on("change_appearance") || is_on("camera_controls") || is_on("rebirth") || is_on("graphics_controls") ||
             Setting(settings, "pc_controls") != "0" || Setting(settings, "widescreen") != "0") {
             try {
                 const fs::path menus = PrepareMenuAssets(merged, out / "eboot.elf", data / "engine-assets",
-                                                         out / "bb-engine-assets.exe", is_on("rebirth"));
+                                                         out / "bb-engine-assets.exe", is_on("rebirth"),
+                                                         PlateTitle(settings, "plate_host_title"),
+                                                         PlateTitle(settings, "plate_guest_title"));
                 SetEnv("BB_PC_MENU_ASSETS", Utf8(menus));
                 Log("Engine: native PC menus prepared locally: %s", Utf8(menus).c_str());
                 if (is_on("rebirth"))
@@ -493,6 +596,14 @@ int Main(std::vector<std::wstring> arguments) {
     if (live == "1") {
         Log("Output %s: live resolution changes (live_resolution=0: startup patch)", size_text(scaled->second).c_str());
     } else if (scaled) {
+        std::string early = Env("BB_UPSCALE_EARLY", "");
+        if (early.empty()) early = SettingValue(config, "upscale_before_post").value_or("0");
+        if (early == "1" && scaled->second.w % 4 == 0 && scaled->second.h % 4 == 0) {
+            scaled->first = scaled->second;
+            SetEnv("BB_UPSCALE_EARLY", "1");
+        } else {
+            UnsetEnv("BB_UPSCALE_EARLY");
+        }
         SetEnv("BB_RENDER_RES", size_text(scaled->first));
         SetEnv("BB_OUTPUT_RES", size_text(scaled->second));
         SetEnv("BB_AUTO_RENDER_RES", "1");
@@ -529,6 +640,44 @@ int Main(std::vector<std::wstring> arguments) {
         Log("Widescreen: UI viewport %s (the 16:9 stage centred in it)", size_text(patches.ui).c_str());
     } else {
         UnsetEnv("BB_UI_SIZE");
+    }
+    UnsetEnv("BB_WIDE_UI_MOVIES");
+    UnsetEnv("BB_WIDE_OPTION_MOVIE");
+    // Widescreen on a screen of another shape: the menus' full-screen dims, fades, pictures (but the
+    // title screen's) and bands (subtitles, area names) are drawn for the 16:9 stage and stopped at
+    // its edges; widened copies of their movies are mounted over the game's (src/sys/file.c,
+    // BB_WIDE_UI_MOVIES). The PC menus' optionsetting.gfx is widened too, and mounted by the System
+    // pages themselves (BB_WIDE_OPTION_MOVIE, engine/option_menu.cpp). A 16:9 viewport (Widescreen
+    // off, or a 16:9 screen) changes nothing.
+    const bool wide_ui = std::int64_t(patches.ui.w) * 1080 != std::int64_t(patches.ui.h) * 1920;
+    if (wide_ui) {
+        try {
+            std::optional<fs::path> option_movie;
+            if (const auto menus = Env("BB_PC_MENU_ASSETS"); menus && !menus->empty()) {
+                const fs::path prepared = Path(*menus) / "dvdroot_ps4" / "menu" / "optionsetting.gfx";
+                if (fs::is_regular_file(prepared)) option_movie = prepared;
+            }
+            const auto movies = PrepareWideMovies(merged, option_movie, data / "engine-assets",
+                                                  out / "bb-engine-assets.exe", patches.ui.w, patches.ui.h);
+            std::string list, names;
+            for (const auto& m : movies) {
+                if (option_movie && m.relative == "dvdroot_ps4/menu/optionsetting.gfx")
+                    SetEnv("BB_WIDE_OPTION_MOVIE", Utf8(m.file));
+                else
+                    list += m.relative + "\t" + Utf8(m.file) + "\n";
+                names += (names.empty() ? "" : ", ") + Utf8(Path(m.relative).stem());
+                if (Env("BB_UI_VIEWPORT_LOG", "") == "1")
+                    Log("Widescreen: %s: %s", m.relative.c_str(), m.note.c_str());
+            }
+            if (!list.empty()) {
+                WriteText(out / "wide-ui-movies.txt", list);
+                SetEnv("BB_WIDE_UI_MOVIES", Utf8(out / "wide-ui-movies.txt"));
+            }
+            Log("Widescreen: %zu menu movies' full-screen dims, fades and bands widened for %s: %s",
+                movies.size(), size_text(patches.ui).c_str(), names.c_str());
+        } catch (const std::exception& e) {
+            Log("Widescreen: the menus' full-screen dims and fades stay 16:9: %s", e.what());
+        }
     }
     if (patches.heap_patch && !Env("BB_DMEM_MB")) {
         SetEnv("BB_DMEM_MB", "9152");

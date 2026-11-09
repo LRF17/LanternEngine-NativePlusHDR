@@ -6,7 +6,7 @@ one game stands in for the PS4's system libraries, and the game's graphics are t
 The launcher that starts it is in `../launcher`.
 
 > **No game files are included.** You need your own decrypted dump. This project is not affiliated
-> with Sony Interactive Entertainment, FromSoftware, AMD or NVIDIA.
+> with Sony Interactive Entertainment, FromSoftware, AMD, Intel or NVIDIA.
 
 ## Where it comes from
 
@@ -23,7 +23,8 @@ and [shadPS4](https://github.com/shadps4-emu/shadPS4). Since then it has its own
 - **the renderer's performance work**: two-stage draw preparation on worker threads, cached render
   state, pipeline cache warm-up with a crash guard, occlusion culling, frame pacing;
 - **the PC version**: native PC menus and keyboard/mouse controls, high frame rates, widescreen,
-  HDR, DLSS, FSR 3.1/4/4.1.1, frame generation, trophies, online through The Hunter's Dream.
+  HDR, DLSS, FSR 3.1/4/4.1.1, XeSS Super Resolution (Windows, docs/xess.md), frame generation,
+  trophies, online through The Hunter's Dream.
 
 The renderer and shader recompiler are still shadPS4's at their core (`gpu/shadps4`, changes marked
 `bbport:`); the direct path replaces them step by step.
@@ -37,13 +38,17 @@ when it works on one PC.
 ## Build
 
 - **Windows**: `build.ps1` in the repository's root (MSYS2 with the CLANG64 toolchain in
-  `C:\msys64`, .NET 8 for the launcher). `build.ps1 -Version <v> -Release` makes the release zip.
-- **Linux**: `build.sh` here (clang, CMake, Ninja, Vulkan and SDL3 headers; Ubuntu 24.04:
-  `packaging/linux/setup-ubuntu.sh` builds the libraries once). `packaging/linux/build.sh` makes
-  the release archive with the Linux launcher.
+  `C:\msys64`, .NET 8 for the launcher, and the Rust stable toolchain with `cargo`). `build.ps1 -Version <v> -Release` makes the release zip.
+- **Linux**: `build.sh` here (clang, CMake, Ninja, Vulkan and SDL3 headers, plus the Rust stable
+  toolchain with `cargo`; Ubuntu 24.04: `packaging/linux/setup-ubuntu.sh` builds the libraries once).
+  `packaging/linux/build.sh` makes the release archive with the Linux launcher.
 - **Run from a checkout (Linux)**: `BB_GAME_DIR=/path/to/CUSA03173 ./run.sh`.
 
 ## Tests and checks
+
+Brazilian Portuguese can be selected as the game's language without a region-unlock
+patch. It uses the Brazilian text and voice files from the player's own dump; see
+[Brazilian Portuguese game language](docs/BRAZILIAN_PORTUGUESE.md) for behavior and checks.
 
 - `build.sh --test`, and the GPU library's tests (`ninja -C out/gpu pc-input-test ...`).
 - `tools/validate_pipelines.sh`: the engine on Mesa's software Vulkan driver with the validation
@@ -73,6 +78,9 @@ they combine GPL-2.0-or-later code (shadPS4, bbport, bloodborne_pc) with the onl
 The Hunter's Dream from [droogie/bbhost](https://github.com/droogie/bbhost) (GPL-3.0-or-later,
 `licenses/BBHOST-PORTS.md`). Copyright in each part stays with its authors.
 
+The built-in Lamp2Lamp patch is the work of Disschorde:
+[Lamp2Lamp - Warp Between Lamps](https://www.nexusmods.com/bloodborne/mods/455).
+
 Lantern Engine's own code, the launcher and the built-in game patches are © Awaken, under the
 GNU GPL v3 or later with additional terms (GPL-3.0 section 7, see `NOTICE`): anything that uses
 or ships them must keep the credit "Lantern Engine by Awaken" in its source, its about or
@@ -91,3 +99,7 @@ fonts and Lantern Menu SC (a Noto Sans SC subset, SIL OFL 1.1). The built-in gam
 Renderer fixes from AwesomeObserver's and deadinside28's bloodborne_pc forks and 0xCydral's FSR 4
 Vulkan path keep their GPL-2.0-or-later notices. AMD's FSR 4 DLLs and NVIDIA's DLSS files are not
 distributed here.
+
+fromsoftserve contributed the optional lighting effects (GTAO, indirect lighting, contact shadows,
+PCSS, improved reflections, POM cavity, volumetric sunlight and lamp fog, point light shadows, shadow
+resolution choices, motion blur quality) and the conservative occlusion fix, from their BBFSS fork.

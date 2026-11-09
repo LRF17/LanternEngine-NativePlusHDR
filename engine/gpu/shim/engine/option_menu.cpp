@@ -5,6 +5,7 @@
 #include "engine_state.h"
 #include "graphics.h"
 #include "menu_memory.h"
+#include "bbport_looks.h"
 #include "bbport_settings.h"
 #include <SDL3/SDL.h>
 #include <algorithm>
@@ -18,9 +19,9 @@
 #include <string>
 #include <vector>
 
-extern "C" int runtime_file_translate(const char*, char*, std::size_t);
-extern "C" int runtime_file_mount(const char*, const char*);
-extern "C" void runtime_file_unmount(const char*);
+extern "C" int sys_file_translate(const char*, char*, std::size_t);
+extern "C" int sys_file_mount(const char*, const char*);
+extern "C" void sys_file_unmount(const char*);
 
 namespace BbEngine::Options {
 namespace {
@@ -36,6 +37,7 @@ constexpr std::uint8_t kPadding[] = {0x66, 0x66, 0x66, 0x66, 0x66, 0x66, 0x2e, 0
 
 constexpr std::uint32_t kEnhancementsRow = 110013, kGraphicsRow = 110007, kEffectsRow = 110010, kColourRow = 110014;
 constexpr std::uint32_t kControlsRow = 110008, kKeysRow = 110009, kCameraRow = 110011, kQuitRow = 110015;
+constexpr std::uint32_t kLightingRow = 110016, kDetailRow = 110017, kLooksRow = 110018;
 constexpr std::uint32_t kTitleQuitRow = 122000, kQuitQuestion = 920001;
 
 char g_section[32] = "PCEnhance";
@@ -83,6 +85,12 @@ const Choice kPadIcons[] = {{BbSettings::PadIconsAuto, 118013}, {BbSettings::Pad
                             {BbSettings::PadIconsXbox, 118015}};
 static_assert(std::size(kPadIcons) == BbSettings::PadIconsCount);
 
+const Choice kSunShadows[] = {{0, 127010}, {1, 127011}, {2, 127012}};
+const Choice kLampShadows[] = {{0, 127010}, {1, 127013}, {2, 127014}};
+const Choice kBlurQuality[] = {{0, 127010}, {1, 127013}};
+const Choice kLookChoices[] = {{0, 128010}, {1, 128011}, {2, 128012}, {3, 128013}, {4, 128014}, {5, 128016}, {6, 128015}};
+static_assert(std::size(kLookChoices) == BbLooks::PresetCount + 2);
+
 Setting Toggle(std::uint32_t id, std::int32_t def, bool picture = false) { return {Kind::Toggle, id, def, 0, 0, {}, picture}; }
 Setting Slider(std::uint32_t id, std::int32_t def, float base = 0, float step = 1, bool picture = false) {
     return {Kind::Slider, id, def, base, step, {}, picture};
@@ -102,6 +110,13 @@ Setting g_controls[] = {Toggle(118000, 1), Slider(118001, 5), Toggle(118002, 0),
                         Toggle(116002, 1), Toggle(118005, 0),
                         Pick(118006, BbSettings::PromptsAuto, kPrompts), Pick(118007, BbSettings::PadIconsAuto, kPadIcons)};
 Setting g_camera[] = {Slider(118004, 0, 1, 0.05f), Slider(121000, 5, 0.5f, 0.1f), Slider(121001, 5, 0.5f, 0.1f)};
+Setting g_lighting[] = {Toggle(126000, 0), Toggle(126001, 0), Toggle(126002, 0), Toggle(126003, 0),
+                        Slider(126004, 5, 0, 1.2f), Toggle(126005, 0), Slider(126006, 5, 0, 0.2f),
+                        Toggle(126007, 0)};
+Setting g_detail[] = {Toggle(127000, 0), Slider(127001, 5, 0, 0.2f), Toggle(127002, 0), Toggle(127003, 0),
+                      Slider(127004, 5, 0, 0.2f), Pick(127005, 0, kSunShadows), Pick(127006, 0, kLampShadows),
+                      Pick(127007, 0, kBlurQuality)};
+Setting g_looks[] = {Pick(128000, 0, kLookChoices)};
 constexpr int kGraphicsPick = 4;
 
 struct Section {
@@ -116,8 +131,10 @@ Section g_sections[] = {
     {"PCEffects", kEffectsRow, g_effects, true},           {"PCColour", kColourRow, g_colour, true},
     {"PCControls", kControlsRow, g_controls, false},       {"PCKeys", kKeysRow, {}, false},
     {"PCCamera", kCameraRow, g_camera, true},
+    {"PCLighting", kLightingRow, g_lighting, true},        {"PCDetail", kDetailRow, g_detail, true},
+    {"PCLooks", kLooksRow, g_looks, false},
 };
-enum { kEnhance, kGraphics, kEffects, kColour, kControls, kKeys, kCamera, kSectionCount };
+enum { kEnhance, kGraphics, kEffects, kColour, kControls, kKeys, kCamera, kLighting, kDetail, kLooks, kSectionCount };
 static_assert(std::size(g_sections) == kSectionCount);
 bool g_offered[kSectionCount]{};
 
@@ -195,11 +212,13 @@ template <int S> std::int64_t GUEST Open(void* root, void* params) {
 }
 template <int S> void* GUEST RowOpener(void* out, void* ctx) { return OptionRows::OpenThrough(out, ctx, &Open<S>); }
 constexpr OptionRows::Opener kOpeners[] = {&RowOpener<0>, &RowOpener<1>, &RowOpener<2>, &RowOpener<3>,
-                                           &RowOpener<4>, &RowOpener<5>, &RowOpener<6>};
+                                           &RowOpener<4>, &RowOpener<5>, &RowOpener<6>, &RowOpener<7>,
+                                           &RowOpener<8>, &RowOpener<9>};
 static_assert(std::size(kOpeners) == kSectionCount);
 bool HandlersEven() {
     const OptionRows::Handler handlers[] = {&Handler<0>, &Handler<1>, &Handler<2>, &Handler<3>,
-                                            &Handler<4>, &OptionKeys::Build, &Handler<6>};
+                                            &Handler<4>, &OptionKeys::Build, &Handler<6>,
+                                            &Handler<7>, &Handler<8>, &Handler<9>};
     for (const auto h : handlers)
         if (reinterpret_cast<std::uintptr_t>(h) & 1) return false;
     return true;
@@ -260,7 +279,7 @@ bool MountAssets(const char* assets, const char* game) {
             const std::string guest = "/app0/" + relative.generic_string();
             char resolved[512]{};
             std::error_code e;
-            if (!fs::is_regular_file(prepared) || runtime_file_translate(guest.c_str(), resolved, sizeof resolved) ||
+            if (!fs::is_regular_file(prepared) || sys_file_translate(guest.c_str(), resolved, sizeof resolved) ||
                 !(fs::equivalent(resolved, merged / relative, e) || fs::equivalent(resolved, dump / relative, e))) {
                 host_log("pc-options off: %s is not the file the PC menus were made from", relative.generic_string().c_str());
                 return false;
@@ -269,6 +288,14 @@ bool MountAssets(const char* assets, const char* game) {
             return true;
         };
         if (!add("dvdroot_ps4/menu/optionsetting.gfx")) return false;
+        // Widescreen: the same movie with its full-screen dim widened for the UI viewport
+        // (start/main.cpp, made from the prepared one).
+        const char* wide = std::getenv("BB_WIDE_OPTION_MOVIE");
+        std::error_code e;
+        if (wide && *wide && fs::is_regular_file(wide, e)) {
+            files.back().second = fs::path(wide).string();
+            host_log("pc-options: optionsetting.gfx widened for the UI viewport");
+        }
         for (const auto& language : fs::directory_iterator(dump / "dvdroot_ps4/msg")) {
             if (!language.is_directory()) continue;
             const fs::path relative = fs::path("dvdroot_ps4/msg") / language.path().filename() / "menu.msgbnd.dcx";
@@ -280,8 +307,8 @@ bool MountAssets(const char* assets, const char* game) {
     }
     if (files.size() < 2 || files.size() > 24) return false;
     for (const auto& [guest, host] : files) {
-        if (runtime_file_mount(guest.c_str(), host.c_str())) {
-            for (const auto& done : g_mounted) runtime_file_unmount(done.c_str());
+        if (sys_file_mount(guest.c_str(), host.c_str())) {
+            for (const auto& done : g_mounted) sys_file_unmount(done.c_str());
             g_mounted.clear();
             return false;
         }
@@ -335,6 +362,24 @@ bool BindSettings() {
     g_camera[0].amount = &s.camera_fov_scale;
     g_camera[1].amount = &s.camera_distance_scale;
     g_camera[2].amount = &s.camera_height_scale;
+    using namespace BbSettings;
+    effect(g_lighting[0], EffectGtao);
+    effect(g_lighting[1], EffectContactShadows);
+    effect(g_lighting[2], EffectPcss);
+    effect(g_lighting[3], EffectGi);
+    g_lighting[4].amount = &s.graphics_gi_strength;
+    effect(g_lighting[5], EffectVolumetricLight);
+    g_lighting[6].amount = &s.graphics_volumetric_intensity;
+    effect(g_lighting[7], EffectPointFog);
+    effect(g_detail[0], EffectModernSsr);
+    g_detail[1].amount = &s.graphics_ssr_intensity;
+    effect(g_detail[2], EffectPomCavity);
+    effect(g_detail[3], EffectPointShadows);
+    g_detail[4].amount = &s.graphics_point_fog_intensity;
+    g_detail[5].number = &s.graphics_shadow_resolution;
+    g_detail[6].number = &s.graphics_local_shadow_resolution;
+    g_detail[7].number = &s.graphics_motion_blur_quality;
+    g_looks[0].number = &s.look_choice;
     return true;
 }
 }
@@ -365,7 +410,7 @@ bool Install(std::uint8_t* image, std::size_t size) {
     }
     if (!MountAssets(assets, game)) return false;
     if (!MenuMemory::Install(image, size)) {
-        for (const auto& path : g_mounted) runtime_file_unmount(path.c_str());
+        for (const auto& path : g_mounted) sys_file_unmount(path.c_str());
         g_mounted.clear();
         return false;
     }
@@ -374,6 +419,7 @@ bool Install(std::uint8_t* image, std::size_t size) {
     OptionRows::Bind(g_image);
     g_offered[kEnhance] = true;
     g_offered[kGraphics] = g_offered[kEffects] = g_offered[kColour] = Graphics::Enabled();
+    g_offered[kLighting] = g_offered[kDetail] = g_offered[kLooks] = Graphics::Enabled();
     g_offered[kControls] = g_offered[kKeys] = settings.pc_controls;
     g_offered[kCamera] = settings.camera_controls;
 
@@ -412,6 +458,13 @@ void Tick() {
             Write(s, v);
             changed = true;
             picture |= s.picture;
+            if (&s == &g_looks[0]) {
+                if (v >= 1 && v <= BbLooks::PresetCount) {
+                    BbLooks::Apply(v - 1);
+                } else if (v == BbLooks::PresetCount + 1) {
+                    BbLooks::GoBack();
+                }
+            }
         }
     }
     auto& settings = BbSettings::Get();

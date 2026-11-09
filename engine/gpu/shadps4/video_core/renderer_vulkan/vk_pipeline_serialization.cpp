@@ -20,6 +20,7 @@
 #include "shader_recompiler/info.h"
 #include "video_core/cache_storage.h"
 #include "video_core/renderer_vulkan/vk_instance.h"
+#include "video_core/renderer_vulkan/vk_effect_shaders.h"
 #include "video_core/renderer_vulkan/vk_pipeline_cache.h"
 #include "video_core/renderer_vulkan/vk_shader_util.h"
 
@@ -27,6 +28,7 @@ namespace Serialization {
 /* You should increment versions below once corresponding serialization scheme is changed. */
 static constexpr u32 ShaderBinaryVersion = 7u; // bbport: interpolated integer fix (Pascal)
 static constexpr u32 MotionShaderBinaryVersion = 8u; // runtime address descriptor, set 1
+static constexpr u32 CaptureShaderBinaryVersion = 9u;
 static constexpr u32 ShaderMetaVersion = 8u; // bbport: HwFragmentRuntimeInfo::depth_first
 static constexpr u32 PipelineKeyVersion = 6u; // pointer-free pipeline state + generated fragment
 } // namespace Serialization
@@ -79,7 +81,9 @@ std::vector<u8> SerializeShaderMeta(const Shader::Info& info, const Shader::Stag
     meta.Write(Serialization::ShaderMetaVersion);
     const bool vertex_motion = info.hw_stage == Shader::HwStage::Vertex &&
                                spec.runtime_info.hw.vs.motion_vectors;
-    meta.Write(vertex_motion ? Serialization::MotionShaderBinaryVersion
+    const bool vertex_capture = vertex_motion && (spec.runtime_info.hw.vs.motion_vectors & 2) != 0;
+    meta.Write(vertex_capture ? Serialization::CaptureShaderBinaryVersion
+                             : vertex_motion ? Serialization::MotionShaderBinaryVersion
                              : Serialization::ShaderBinaryVersion);
     meta.Write(perm_hash);
     meta.Write(perm_idx);
@@ -117,7 +121,9 @@ void RegisterShaderMeta(const Shader::Info& info,
     meta.Write(Serialization::ShaderMetaVersion);
     const bool vertex_motion = info.hw_stage == Shader::HwStage::Vertex &&
                                spec.runtime_info.hw.vs.motion_vectors;
-    meta.Write(vertex_motion ? Serialization::MotionShaderBinaryVersion
+    const bool vertex_capture = vertex_motion && (spec.runtime_info.hw.vs.motion_vectors & 2) != 0;
+    meta.Write(vertex_capture ? Serialization::CaptureShaderBinaryVersion
+                             : vertex_motion ? Serialization::MotionShaderBinaryVersion
                              : Serialization::ShaderBinaryVersion);
 
     meta.Write(perm_hash);
@@ -154,7 +160,8 @@ bool LoadShaderMeta(Serialization::Archive& ar, Shader::Info& info,
     u32 binary_version{};
     meta.Read(binary_version);
     if (binary_version != Serialization::ShaderBinaryVersion &&
-        binary_version != Serialization::MotionShaderBinaryVersion) {
+        binary_version != Serialization::MotionShaderBinaryVersion &&
+        binary_version != Serialization::CaptureShaderBinaryVersion) {
         return false;
     }
 
@@ -174,7 +181,9 @@ bool LoadShaderMeta(Serialization::Archive& ar, Shader::Info& info,
     // reusable; v8 motion binaries load the current addresses from a renderer-owned descriptor.
     const bool vertex_motion = info.hw_stage == Shader::HwStage::Vertex &&
                                spec.runtime_info.hw.vs.motion_vectors;
-    if (binary_version != (vertex_motion ? Serialization::MotionShaderBinaryVersion
+    const bool vertex_capture = vertex_motion && (spec.runtime_info.hw.vs.motion_vectors & 2) != 0;
+    if (binary_version != (vertex_capture ? Serialization::CaptureShaderBinaryVersion
+                             : vertex_motion ? Serialization::MotionShaderBinaryVersion
                                         : Serialization::ShaderBinaryVersion)) {
         return false;
     }
@@ -377,6 +386,24 @@ bool PipelineCache::LoadGraphicsPipeline(Serialization::Archive& ar, bool legacy
           vs_runtime.hw_stage == Shader::HwStage::Vertex && vs_runtime.hw.vs.motion_vectors)) {
         return false;
     }
+    static const bool motion_layout_guard = [] {
+        const char* env = std::getenv("BB_WARMUP_MOTION_GUARD");
+        return !(env && env[0] == '0');
+    }();
+    if (motion_layout_guard && !sel.graphics_key.motion_vectors &&
+        sel.graphics_key.stage_hashes[u32(Shader::SwStage::Vertex)] &&
+        vs_runtime.hw_stage == Shader::HwStage::Vertex && vs_runtime.hw.vs.motion_vectors) {
+        static std::atomic<u32> left_out{0};
+        const u32 count = left_out.fetch_add(1, std::memory_order_relaxed) + 1;
+        if (count <= 20) {
+            std::printf("GPU cache: pipeline key %u left out, a motion vertex shader without motion in "
+                        "its key: vs 0x%016llx, fs 0x%016llx (BB_WARMUP_MOTION_GUARD=0: built)\n",
+                        count,
+                        (unsigned long long)sel.graphics_key.stage_hashes[u32(Shader::SwStage::Vertex)],
+                        (unsigned long long)sel.graphics_key.stage_hashes[u32(Shader::SwStage::Fragment)]);
+        }
+        return false;
+    }
 
     if (graphics_pipelines.contains(sel.graphics_key)) {
         return true;
@@ -410,16 +437,21 @@ bool PipelineCache::LoadPipelineStage(Serialization::Archive& ar, size_t stage, 
         return false;
     }
     // Reject truncated instructions before passing cached SPIR-V to the driver.
+    bool discards = false;
     for (size_t word = 5; word < spv.size();) {
         const u32 count = spv[word] >> 16;
         if (!count || count > spv.size() - word) {
             return false;
         }
+        const u32 opcode = spv[word] & 0xffff;
+        discards |= opcode == 252u || opcode == 5380u;
         word += count;
     }
 
     auto it = program_cache.find(program->info.pgm_hash);
     Program* target = it == program_cache.end() ? program.get() : it->second.get();
+    program->info.has_discard |= discards;
+    target->info.has_discard |= discards;
     vk::ShaderModule module;
     if (perm_idx < target->modules.size() && target->modules[perm_idx].module) {
         // The persisted index is part of the pipeline key. Equal specializations at other
@@ -429,8 +461,14 @@ bool PipelineCache::LoadPipelineStage(Serialization::Archive& ar, size_t stage, 
         }
         module = target->modules[perm_idx].module;
     } else {
+        const auto effect_shader = EffectShaders::Replacement(program->info, profile, spec.start);
+        const auto effect_patch =
+            effect_shader.empty() ? EffectShaders::Patched(program->info, spv) : std::nullopt;
+        const std::span<const u32> code = !effect_shader.empty() ? effect_shader
+                                          : effect_patch         ? std::span<const u32>(*effect_patch)
+                                                                 : std::span<const u32>(spv);
         const auto [result, compiled] = instance.GetDevice().createShaderModule(
-            {.codeSize = spv.size() * sizeof(u32), .pCode = spv.data()});
+            {.codeSize = code.size_bytes(), .pCode = code.data()});
         if (result != vk::Result::eSuccess) {
             throw Serialization::CorruptData{"cached SPIR-V rejected by the driver"};
         }
@@ -632,6 +670,7 @@ void PipelineCache::WarmUp() {
     };
     // bbport (docs/pipeline_compiles.md): how long the start waits for the cached pipelines.
     const auto warmup_start = std::chrono::steady_clock::now();
+    database.ReadAhead();
     // The pipelines' state is rebuilt here, one after the other: selection, programs, SRT walker
     // allocation and archive reads are shared. Their creation by the driver (100-300 ms each with
     // its cache cold, after every compiler or driver change) is collected (WarmupJobs) and runs

@@ -1,26 +1,17 @@
-"""Windows smoke checks: exercise the shipped embedded Python, not the CI Python."""
+"""Checks of the assembled Windows package, without running or writing anything in it."""
 import json
-import os
-import re
 from pathlib import Path
-import subprocess
+import re
 import sys
-import tempfile
 
 root = Path(sys.argv[1]).resolve()
-python = root / 'engine/tools/python/python.exe'
-scripts = root / 'engine/scripts'
-subprocess.run([python, '-c', 'import mods, prepare, online, patches, engine_assets; print("Preparation imports OK")'],
-               cwd=root, check=True)
-with tempfile.TemporaryDirectory() as data:
-    env = dict(os.environ, BB_DATA_DIR=data, BB_CONFIG=str(Path(data) / 'lantern.ini'),
-               BB_ONLINE_PAUSED='1', PYTHONUTF8='1')
-    result = subprocess.run([python, scripts / 'run_windows.py', '--game-dir', str(Path(data) / 'missing-game')],
-                            cwd=root, env=env, capture_output=True, text=True, encoding='utf-8')
-    print(result.stdout)
-    print(result.stderr)
-    if result.returncode != 1 or 'No eboot.bin' not in result.stderr:
-        raise RuntimeError('Packaged preparation entry point did not reach game detection')
+# Lantern 0.9.40's layout: the native start and launcher, no Python and no Vulkan loader.
+for name in ['Lantern Engine.exe', 'Bloodborne.exe', 'engine/out/bb-start.exe', 'engine/out/bb-probe.exe',
+             'engine/out/bb-isa-scan.exe', 'engine/out/gpu-cache.id']:
+    assert (root / name).is_file(), f'missing {name}'
+for name in ['engine/scripts', 'engine/tools', 'engine/out/vulkan-1.dll', 'user', 'logs', 'out']:
+    assert not (root / name).exists(), f'{name} must not ship'
+assert not list(root.rglob('__pycache__')), 'no __pycache__ may ship'
 # The shipped settings (copied to lantern.ini by the launcher in a folder without settings).
 ini = (root / 'engine/lantern.default.ini').read_text()
 assert 'hdr_mode=nativeplus' in ini and 'hdr_tonemapper=5' in ini
@@ -33,4 +24,4 @@ engine = json.loads((root / 'package.json').read_text(encoding='utf-8'))['engine
 updater = (Path(__file__).resolve().parents[2] / 'launcher/windows/BloodborneLauncher/Core/Updater.cs').read_text(encoding='utf-8')
 launcher_engine = re.search(r'EngineId = "([^"]+)"', updater).group(1)
 assert engine == launcher_engine, f'package.json engine {engine} differs from Updater.EngineId {launcher_engine}'
-print('Packaged Python and game-detection smoke check passed; an in-game launch is still required.')
+print('Package layout, shipped settings and engine id checked; an in-game launch is still required.')

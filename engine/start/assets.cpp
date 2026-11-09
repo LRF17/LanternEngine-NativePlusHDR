@@ -383,8 +383,15 @@ std::vector<std::pair<std::string, fs::path>> PrepareEffectFixes(const fs::path&
 }
 
 fs::path PrepareMenuAssets(const fs::path& game, const fs::path& elf, const fs::path& cache, const fs::path& tool,
-                           bool rebirth) {
+                           bool rebirth, const std::optional<std::string>& host_title,
+                           const std::optional<std::string>& guest_title) {
     VerifyExecutable(elf);
+    if (host_title) SetEnv("BB_PLATE_HOST_TITLE", "=" + *host_title);
+    else UnsetEnv("BB_PLATE_HOST_TITLE");
+    if (guest_title) SetEnv("BB_PLATE_GUEST_TITLE", "=" + *guest_title);
+    else UnsetEnv("BB_PLATE_GUEST_TITLE");
+    const std::string plates = (host_title ? "=" + *host_title : std::string("-")) + "|" +
+                               (guest_title ? "=" + *guest_title : std::string("-"));
     const fs::path root = cache / "pc-menus";
     std::vector<std::pair<std::string, std::string>> sources{{"dvdroot_ps4/menu/optionsetting.gfx", "movie"}};
     std::vector<std::string> messages;
@@ -414,7 +421,8 @@ fs::path PrepareMenuAssets(const fs::path& game, const fs::path& elf, const fs::
         std::optional<std::string> current;
         const auto prior = previous.contains("files") && previous["files"].contains(relative) ? previous["files"][relative]
                                                                                              : nlohmann::json::object();
-        if (previous.value("generator", "") == generator && prior.value("input", "") == digest) {
+        if (previous.value("generator", "") == generator && prior.value("input", "") == digest &&
+            prior.value("kind", "") == kind && (kind != "messages" || prior.value("plates", "") == plates)) {
             try {
                 const std::string now = Sha256Hex(ReadFile(destination));
                 if (now == prior.value("output", "")) current = now;
@@ -438,11 +446,181 @@ fs::path PrepareMenuAssets(const fs::path& game, const fs::path& elf, const fs::
                 throw Error("cannot write " + Utf8(destination));
             }
         }
-        rows[relative] = {{"input", digest}, {"output", *current}};
+        rows[relative] = {{"input", digest}, {"output", *current}, {"kind", kind}, {"plates", plates}};
     }
     fs::create_directories(root);
     WriteText(manifest_path, nlohmann::ordered_json{{"generator", generator}, {"files", rows}}.dump(2));
     return fs::canonical(root);
+}
+
+fs::path PrepareLamp2Lamp(const fs::path& game, const std::optional<fs::path>& update, const fs::path& patch,
+                          const fs::path& cache) {
+    const Bytes file = ReadFile(patch);
+    if (file.size() < 8 || std::memcmp(file.data(), "L2LP", 4)) throw Error("not a Lamp2Lamp patch file");
+    uLongf size = Load<std::uint32_t>(file.data() + 4);
+    Bytes body(size);
+    if (uncompress(body.data(), &size, file.data() + 8, uLong(file.size() - 8)) != Z_OK || size != body.size())
+        throw Error("damaged Lamp2Lamp patch file");
+    std::size_t at = 0;
+    const auto take = [&](std::size_t count) {
+        if (count > body.size() - at) throw Error("damaged Lamp2Lamp patch file");
+        const std::uint8_t* here = body.data() + at;
+        at += count;
+        return here;
+    };
+    const auto u32 = [&] { return Load<std::uint32_t>(take(4)); };
+    const auto hex = [&] {
+        static constexpr char kDigits[] = "0123456789abcdef";
+        const std::uint8_t* raw = take(32);
+        std::string text;
+        for (int i = 0; i < 32; ++i) {
+            text += kDigits[raw[i] >> 4];
+            text += kDigits[raw[i] & 15];
+        }
+        return text;
+    };
+    struct Row {
+        std::string name, input, output;
+        std::uint32_t length;
+        std::size_t operations, count;
+        Bytes packed;
+    };
+    std::vector<Row> rows(u32());
+    std::string state = Sha256Hex(file);
+    std::error_code error;
+    for (Row& row : rows) {
+        const std::size_t name = Load<std::uint16_t>(take(2));
+        const std::uint8_t* text = take(name);
+        row.name.assign(reinterpret_cast<const char*>(text), name);
+        row.input = hex();
+        row.output = hex();
+        row.length = u32();
+        row.count = u32();
+        row.operations = at;
+        for (std::size_t i = 0; i < row.count; ++i) {
+            const std::uint32_t where = u32(), length = u32();
+            if (where == 0xFFFFFFFFu) take(length);
+        }
+        const fs::path source = update && fs::is_regular_file(*update / Path(row.name), error) ? *update / Path(row.name) : game / Path(row.name);
+        if (!fs::is_regular_file(source, error)) throw Error(row.name + " is missing from the game");
+        row.packed = ReadFile(source);
+        state += Sha256Hex(row.packed);
+    }
+    if (at != body.size()) throw Error("damaged Lamp2Lamp patch file");
+    const fs::path root = cache / patch.stem(), stamp = root / "complete";
+    const std::string wanted = Sha256Hex(state.data(), state.size());
+    try {
+        if (Trim(ReadText(stamp)) == wanted) return fs::canonical(root);
+    } catch (const std::exception&) {
+    }
+    fs::remove_all(root, error);
+    for (const Row& row : rows) {
+        const Bytes raw = DcxUnpack(row.packed);
+        if (Sha256Hex(raw) != row.input) throw Error(row.name + " is not the 1.09 file");
+        Bytes result;
+        result.reserve(row.length);
+        at = row.operations;
+        for (std::size_t i = 0; i < row.count; ++i) {
+            const std::uint32_t where = u32(), length = u32();
+            if (where == 0xFFFFFFFFu) {
+                const std::uint8_t* data = take(length);
+                result.insert(result.end(), data, data + length);
+            } else {
+                if (where > raw.size() || length > raw.size() - where) throw Error("damaged Lamp2Lamp patch file");
+                result.insert(result.end(), raw.begin() + std::ptrdiff_t(where), raw.begin() + std::ptrdiff_t(where) + length);
+            }
+        }
+        if (Sha256Hex(result) != row.output) throw Error(row.name + " does not match the verified result");
+        const fs::path destination = root / Path(row.name);
+        fs::create_directories(destination.parent_path());
+        WriteFile(destination, DcxPack(result));
+    }
+    WriteText(stamp, wanted + "\n");
+    return fs::canonical(root);
+}
+
+std::vector<WideMovie> PrepareWideMovies(const fs::path& game, const std::optional<fs::path>& option_movie,
+                                         const fs::path& cache, const fs::path& tool, int width, int height) {
+    const std::string size = std::to_string(width) + "x" + std::to_string(height);
+    const fs::path root = cache / "wide-ui" / size;
+    const std::string option = "dvdroot_ps4/menu/optionsetting.gfx";
+    std::vector<std::pair<std::string, fs::path>> sources;
+    std::error_code error;
+    for (const auto& item : fs::directory_iterator(game / "dvdroot_ps4" / "menu", error)) {
+        if (!item.is_regular_file(error) || Lower(Utf8(item.path().extension())) != ".gfx") continue;
+        const std::string relative = "dvdroot_ps4/menu/" + Utf8(item.path().filename());
+        sources.emplace_back(relative, relative == option && option_movie ? *option_movie : item.path());
+    }
+    if (sources.empty()) throw Error("no menu movies in " + Utf8(game / "dvdroot_ps4" / "menu"));
+    std::sort(sources.begin(), sources.end());
+    // Kept while the movies, the tool and the size are the same, told by each file's size and time
+    // (reading and hashing some 70 movies at every start took longer than the check is worth).
+    const auto stamp = [](const fs::path& path) {
+        std::error_code e;
+        const auto bytes = fs::file_size(path, e);
+        const long long time = e ? 0 : static_cast<long long>(fs::last_write_time(path, e).time_since_epoch().count());
+        return e ? std::string("missing") : std::to_string(bytes) + ":" + std::to_string(time);
+    };
+    std::string key = stamp(tool) + " " + size;
+    for (const auto& [relative, source] : sources) key += "\n" + relative + " " + stamp(source);
+    key = Sha256Hex(key.data(), key.size());
+    const fs::path manifest_path = root / "manifest.json";
+    // The movies the last run made, if its manifest reads as one (anything else: made again).
+    std::string previous_key;
+    std::vector<std::pair<std::string, std::string>> previous_files;  // relative path, output stamp
+    std::vector<std::string> previous_notes;
+    try {
+        const auto previous = nlohmann::json::parse(ReadText(manifest_path));
+        previous_key = previous.at("key").get<std::string>();
+        for (const auto& f : previous.at("files")) {
+            previous_files.emplace_back(f.at("relative").get<std::string>(), f.at("output").get<std::string>());
+            previous_notes.push_back(f.value("note", ""));
+        }
+    } catch (const std::exception&) {
+        previous_key.clear();
+    }
+    std::vector<WideMovie> made;
+    if (!previous_key.empty() && previous_key == key) {
+        bool whole = true;
+        for (std::size_t i = 0; i < previous_files.size(); ++i) {
+            const auto& [relative, output] = previous_files[i];
+            WideMovie m{relative, root / Path(relative), previous_notes[i]};
+            whole = whole && !relative.empty() && stamp(m.file) == output;
+            made.push_back(std::move(m));
+        }
+        if (whole) return made;
+        made.clear();
+    }
+    // Only the movies this made before are removed: a movie that needs nothing now must not stay.
+    for (const auto& [relative, output] : previous_files)
+        if (!relative.empty()) fs::remove(root / Path(relative), error);
+    fs::create_directories(root);
+    std::string list;
+    for (const auto& [relative, source] : sources) list += relative + "\t" + Utf8(source) + "\n";
+    WriteText(root / "sources.txt", list);
+    std::string output;
+    if (RunProgram(tool, {L"wide-movies", Wide(size), (root / "sources.txt").native(), root.native()}, &output))
+        throw Error("the menu movie tool failed: " + Trim(output));
+    nlohmann::ordered_json rows = nlohmann::ordered_json::array();
+    std::size_t at = 0;
+    while (at < output.size()) {
+        std::size_t end = output.find('\n', at);
+        if (end == std::string::npos) end = output.size();
+        std::string line = output.substr(at, end - at);
+        at = end + 1;
+        if (!line.empty() && line.back() == '\r') line.pop_back();
+        const std::size_t tab = line.find('\t');
+        if (tab == std::string::npos || !tab) continue;
+        if (line[0] == '!') {
+            Log("Widescreen: %s left as it is: %s", line.substr(1, tab - 1).c_str(), line.substr(tab + 1).c_str());
+            continue;
+        }
+        WideMovie m{line.substr(0, tab), root / Path(line.substr(0, tab)), line.substr(tab + 1)};
+        rows.push_back({{"relative", m.relative}, {"output", stamp(m.file)}, {"note", m.note}});
+        made.push_back(std::move(m));
+    }
+    WriteText(manifest_path, nlohmann::ordered_json{{"key", key}, {"files", rows}}.dump(2));
+    return made;
 }
 
 }

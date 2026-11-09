@@ -15,8 +15,10 @@
 #include <vector>
 
 #include <SDL3/SDL.h>
+#include <xxhash.h>
 
 #include "bbport_settings.h"
+#include "hud_gauge.h"
 #include "engine/change_appearance.h"
 #include "engine/keycap_art.h"
 #include "input/bindings.h"
@@ -82,7 +84,7 @@ bool XboxIcons() {
     case BbSettings::PadIconsXbox: return true;
     case BbSettings::PadIconsPlayStation: return false;
     default: {
-        const int type = runtime_pad_type();
+        const int type = sys_pad_type();
         return type != SDL_GAMEPAD_TYPE_UNKNOWN && type != SDL_GAMEPAD_TYPE_PS3 &&
                type != SDL_GAMEPAD_TYPE_PS4 && type != SDL_GAMEPAD_TYPE_PS5;
     }
@@ -181,7 +183,7 @@ std::optional<Keycap::Spec> PadSpec(int icon) {
         return std::nullopt;
     }
     int button;
-    switch (runtime_pad_button(it->bit, icon == kTouchRight)) {
+    switch (sys_pad_button(it->bit, icon == kTouchRight)) {
     case SDL_GAMEPAD_BUTTON_SOUTH: button = PadA; break;
     case SDL_GAMEPAD_BUTTON_EAST: button = PadB; break;
     case SDL_GAMEPAD_BUTTON_WEST: button = PadX; break;
@@ -277,7 +279,6 @@ auto& g_drawn = *new std::unordered_map<std::string, std::vector<std::uint8_t>>;
 
 constexpr int kHud = kIconCount;
 constexpr std::uint64_t kHudHash = 0x08d886c6323fa447ull;
-constexpr std::uint32_t kHudWidth = 1024, kHudHeight = 512;
 constexpr int kHudBlockY = 30, kHudBlocksX = 7, kHudBlocksY = 8;
 constexpr struct {
     Icon icon;
@@ -402,6 +403,60 @@ bool Draw(int texture, std::uint8_t* data, std::size_t size) {
         drawn = true;
     }
     return drawn;
+}
+
+void DecodeHud(const std::uint8_t* data, std::uint8_t* rgba) {
+    std::uint32_t texels[16];
+    for (int by = 0; by < int(kHudHeight / 4); ++by) {
+        for (int bx = 0; bx < int(kHudWidth / 4); ++bx) {
+            BbHudGauge::DecodeBc7Block(data + HudBlock(bx, by), texels);
+            for (int y = 0; y < 4; ++y) {
+                std::memcpy(rgba + (std::size_t(by * 4 + y) * kHudWidth + bx * 4) * 4, &texels[y * 4], 16);
+            }
+        }
+    }
+}
+
+std::array<HudRect, 3> HudPrompts() {
+    static_assert(std::size(kHudButtons) == 3);
+    std::array<HudRect, 3> rects{};
+    for (std::size_t i = 0; i < rects.size(); ++i) {
+        rects[i] = {kHudButtons[i].block_x * 4, kHudBlockY * 4, kHudBlocksX * 4, kHudBlocksY * 4};
+    }
+    return rects;
+}
+
+std::uint64_t HudHashes(const std::uint8_t* data, std::array<std::uint64_t, 3>& prompts) {
+    // The prompts' blocks, in the sheet's order, and each prompt's own hash.
+    std::vector<std::size_t> masked;
+    for (std::size_t i = 0; i < prompts.size(); ++i) {
+        XXH3_state_t* state = XXH3_createState();
+        XXH3_64bits_reset(state);
+        for (int by = kHudBlockY; by < kHudBlockY + kHudBlocksY; ++by) {
+            for (int bx = kHudButtons[i].block_x; bx < kHudButtons[i].block_x + kHudBlocksX; ++bx) {
+                const std::size_t at = HudBlock(bx, by);
+                XXH3_64bits_update(state, data + at, 16);
+                masked.push_back(at);
+            }
+        }
+        prompts[i] = XXH3_64bits_digest(state);
+        XXH3_freeState(state);
+    }
+    // The sheet with those blocks zeroed, streamed.
+    std::sort(masked.begin(), masked.end());
+    static constexpr std::uint8_t kZero[16] = {};
+    XXH3_state_t* state = XXH3_createState();
+    XXH3_64bits_reset(state);
+    std::size_t from = 0;
+    for (const std::size_t at : masked) {
+        XXH3_64bits_update(state, data + from, at - from);
+        XXH3_64bits_update(state, kZero, 16);
+        from = at + 16;
+    }
+    XXH3_64bits_update(state, data + from, kHudBytes - from);
+    const std::uint64_t hash = XXH3_64bits_digest(state);
+    XXH3_freeState(state);
+    return hash;
 }
 
 bool Changed() {

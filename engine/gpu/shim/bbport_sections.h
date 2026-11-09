@@ -133,10 +133,14 @@ enum AId : std::uint32_t {
     ARing,
     AInputs,
     APacket,
+    AKey,
+    ARecord,
+    APrepared,
+    ATables,
     ACount,
 };
 inline constexpr const char* ANames[ACount] = {"draw", "pipeline", "constants", "inputs",
-                                               "packet"};
+                                               "packet", "key", "record", "prepared", "tables"};
 inline std::array<std::atomic<std::uint64_t>, ACount> a_cycles{};
 inline std::atomic<std::uint64_t> a_draws{0};
 struct ScopeA {

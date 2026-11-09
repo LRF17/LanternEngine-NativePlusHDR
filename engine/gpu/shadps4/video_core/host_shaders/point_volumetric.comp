@@ -1,0 +1,79 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+#version 450
+#extension GL_EXT_scalar_block_layout : require
+
+layout(local_size_x = 8, local_size_y = 8) in;
+layout(scalar, binding = 0) readonly buffer Constants { uint d[]; } cb;
+layout(scalar, binding = 1) readonly buffer Lights { uint d[]; } lights;
+layout(binding = 2) uniform sampler2D depth_tex;
+layout(binding = 3, rgba16f) uniform image2D fog_out;
+layout(push_constant) uniform Params {
+    uint count;
+    float intensity;
+};
+
+const float GAUSS_X[3] = float[3](0.1127016654, 0.5, 0.8872983346);
+const float GAUSS_W[3] = float[3](0.2777777778, 0.4444444444, 0.2777777778);
+
+float c(uint i) { return uintBitsToFloat(cb.d[i]); }
+vec4 row(uint i) { return vec4(c(i), c(i + 1u), c(i + 2u), c(i + 3u)); }
+bool finite3(vec3 v) { return !any(isnan(v)) && !any(isinf(v)); }
+
+float inscatter(vec3 ray, vec3 centre, float radius, float begin, float end) {
+    float energy = 0.0;
+    for (int i = 0; i < 3; ++i) {
+        float t = mix(begin, end, GAUSS_X[i]);
+        float falloff = max(0.0, 1.0 - length(ray * t - centre) / radius);
+        energy += GAUSS_W[i] * falloff * falloff * exp(-0.025 * t);
+    }
+    return energy * 0.025 * (end - begin);
+}
+
+void main() {
+    ivec2 px = ivec2(gl_GlobalInvocationID.xy);
+    ivec2 size = imageSize(fog_out);
+    if (any(greaterThanEqual(px, size))) return;
+    vec2 uv = (vec2(px) + 0.5) / vec2(size);
+    float depth = texelFetch(depth_tex, px, 0).r;
+    if (!(depth > 0.0 && depth <= 1.0)) return;
+    mat4 inverse_projection = transpose(mat4(row(0u), row(4u), row(8u), row(12u)));
+    vec4 h = inverse_projection *
+        vec4(uv.x * 2.0 - 1.0, 1.0 - uv.y * 2.0, depth == 1.0 ? 0.5 : depth, 1.0);
+    if (abs(h.w) < 1e-8) return;
+    vec3 surface = h.xyz / h.w;
+    if (!finite3(surface) || !(surface.z > 0.0)) return;
+    float distance_to_surface = length(surface);
+    vec3 ray = surface / distance_to_surface;
+    float limit = depth == 1.0 ? 100.0 : min(distance_to_surface, 100.0);
+    vec3 scattering = vec3(0.0);
+    for (uint k = 0u; k < count; ++k) {
+        uint at = k * 16u;
+        vec3 centre = uintBitsToFloat(uvec3(lights.d[at], lights.d[at + 1u], lights.d[at + 2u]));
+        float inverse_radius_squared = uintBitsToFloat(lights.d[at + 3u]);
+        if (!finite3(centre) || isnan(inverse_radius_squared) ||
+            isinf(inverse_radius_squared) || !(inverse_radius_squared > 0.0)) continue;
+        float along = dot(centre, ray);
+        vec3 perpendicular = centre - along * ray;
+        float discriminant = 1.0 / inverse_radius_squared - dot(perpendicular, perpendicular);
+        if (!(discriminant > 0.0)) continue;
+        float half_chord = sqrt(discriminant);
+        float begin = max(0.0, along - half_chord);
+        float end = min(limit, along + half_chord);
+        if (!(end > begin)) continue;
+
+        vec3 rgb = uintBitsToFloat(uvec3(lights.d[at + 4u], lights.d[at + 5u], lights.d[at + 6u]));
+        if (!finite3(rgb)) continue;
+        rgb = max(rgb, vec3(0.0));
+        rgb /= max(1.0, max(rgb.r, max(rgb.g, rgb.b)) / 4.0);
+        float luminance = dot(rgb, vec3(0.2126, 0.7152, 0.0722));
+        if (luminance <= 0.0) continue;
+        rgb = mix(vec3(luminance), rgb, 0.75);
+
+        float radius = inversesqrt(inverse_radius_squared);
+        float nearest = clamp(along, begin, end);
+        scattering += rgb * (inscatter(ray, centre, radius, begin, nearest) +
+                             inscatter(ray, centre, radius, nearest, end));
+    }
+    vec4 previous = imageLoad(fog_out, px);
+    imageStore(fog_out, px, vec4(previous.rgb + scattering * (0.35 * intensity), 0.0));
+}

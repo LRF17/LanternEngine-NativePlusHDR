@@ -238,6 +238,9 @@ TemporalUpscaler::TemporalUpscaler(const Instance& instance_, Scheduler& schedul
     if (instance.IsDlssCapable()) {
         dlss = std::make_unique<DlssUpscaler>(instance, scheduler);
     }
+    if (instance.IsXessCapable()) {
+        xess = std::make_unique<XessUpscaler>(instance, scheduler);
+    }
     // bbport: FSR 4.1.1 runs through fsr4vk (shipped in the package, vk_fsr4vk.cpp), or by the
     // replay of an fsr4_411 set built from the player's own AMD DLL: with neither, as on a GPU
     // without its shaders, FSR 4 instead (#22).
@@ -245,10 +248,14 @@ TemporalUpscaler::TemporalUpscaler(const Instance& instance_, Scheduler& schedul
     std::error_code fsr411_error;
     const bool fsr411_assets = std::filesystem::is_directory(
         fsr411_dir && fsr411_dir[0] ? fsr411_dir : "fsr4_411", fsr411_error);
+    const char* fsr4_builtin_amd = std::getenv("BB_FSR4_BUILTIN_AMD");
     BbSettings::ConfigureUpscalerSupport(instance.IsFsr4Int8Supported(),
                                          (instance.IsFsr411Supported() && fsr411_assets) ||
                                              instance.IsFsr4VkSupported(),
-                                         dlss && dlss->Available());
+                                         dlss && dlss->Available(), instance.IsFsrSdkAvailable(),
+                                         instance.GetVendorID() == 0x1002 &&
+                                             !(fsr4_builtin_amd && fsr4_builtin_amd[0] == '1'),
+                                         xess && xess->Available());
     fsr4 = std::make_unique<Fsr4Upscaler>(instance, scheduler);
     // Available unless BB_UPSCALER=none; on/off and the parameters are the menu's settings.
     const char* env = std::getenv("BB_UPSCALER");
@@ -278,9 +285,19 @@ TemporalUpscaler::TemporalUpscaler(const Instance& instance_, Scheduler& schedul
             render_height = h;
         }
     }
+    const char* early_env = std::getenv("BB_UPSCALE_EARLY");
+    early_upscale = scaled_session && early_env && early_env[0] == '1' && render_width == target_width &&
+                    render_height == target_height;
+    if (early_upscale) {
+        SceneResolution::Native() = {render_width, render_height};
+        scene_targets.SetSize(SceneResolution::Native());
+        std::printf("Upscaler: runs on the scene before post-processing, game targets %ux%u\n", render_width,
+                    render_height);
+    }
     // FSR 4's model, built in the background from the start (its first build compiles for
     // tens of seconds on some drivers), so it is usually ready when the game's first frame is.
-    if (enabled && BbSettings::Get().upscaler == BbSettings::UpscalerFsr4) {
+    if (enabled && (BbSettings::Get().upscaler == BbSettings::UpscalerFsr4 ||
+                    BbSettings::Get().upscaler == BbSettings::UpscalerFsr)) {
         fsr4->Prewarm(BbSettings::ModelPreset(BbSettings::RenderPreset()), target_width, target_height);
     }
     // Scene depth copied into the output-size UI depth by a blit (depth aspect).
@@ -379,11 +396,11 @@ float Halton(u32 index, u32 base) {
 } // namespace
 
 bool TemporalUpscaler::ReducedScene(const VideoCore::Image& color) const {
-    return !scaled_session && scene_targets.Reduced() && scene_targets.EligibleScene(color);
+    return (!scaled_session || early_upscale) && scene_targets.Reduced() && scene_targets.EligibleScene(color);
 }
 
 bool TemporalUpscaler::RasterScaling() const {
-    return !scaled_session && scene_targets.Reduced() && !done_this_frame;
+    return (!scaled_session || early_upscale) && scene_targets.Reduced() && !done_this_frame;
 }
 
 bool TemporalUpscaler::OnFrameStart() {
@@ -452,13 +469,14 @@ bool TemporalUpscaler::OnFrameStart() {
     }
     // Dynamic scene resolution scaling (live preset switching) works on all GPUs.
     // On GPUs without D32S8 blit support, UI depth is cleared instead of copied from scene.
-    if (!scaled_session) {
+    if (!scaled_session || early_upscale) {
         // bbport: live scene sizes reduce the game's 1920x1080 targets only. A third-party
         // resolution patch (3440x1440 with a 1080p output) left none to reduce, and a preset
         // change in the menu crashed the driver (nvoglv64, DLSS): such a scene stays native.
         const auto game_size = camera_motion.RenderSize();
         const bool game_1080p =
-            game_size[0] == 0 || (game_size[0] == 1920 && game_size[1] == 1080);
+            game_size[0] == 0 ||
+            (game_size[0] == SceneResolution::Native().width && game_size[1] == SceneResolution::Native().height);
         static bool told = false;
         if (!game_1080p && preset != 0 && !told) {
             told = true;
@@ -467,11 +485,14 @@ bool TemporalUpscaler::OnFrameStart() {
         }
         scene_targets.SetSize(SceneResolution::ForScale(active && game_1080p ? preset_scale : 1.0,
                                                        {target_width, target_height}));
-        render_width = scene_targets.Size().width;
-        render_height = scene_targets.Size().height;
+        if (!early_upscale) {
+            render_width = scene_targets.Size().width;
+            render_height = scene_targets.Size().height;
+        }
     }
-    BbSettings::Get().active_render_width = Scaled() ? render_width : scene_targets.Size().width;
-    BbSettings::Get().active_render_height = Scaled() ? render_height : scene_targets.Size().height;
+    const bool render_is_scene = Scaled() && !early_upscale;
+    BbSettings::Get().active_render_width = render_is_scene ? render_width : scene_targets.Size().width;
+    BbSettings::Get().active_render_height = render_is_scene ? render_height : scene_targets.Size().height;
     // bbport: outputs other than 1080p upscale the game's finished frame (RunScaled), after its
     // motion blur: the upscaler accumulated the blurred frames along motion vectors that do not
     // describe the blur, a smear over the whole picture (worst at low render sizes). The game's
@@ -485,6 +506,15 @@ bool TemporalUpscaler::OnFrameStart() {
                                              std::memory_order_relaxed);
     if (changed || !dispatched_last_frame) reset = true;
     if (changed) jitter_index = 0;
+    reset_frames += reset && dispatched_last_frame ? 1 : 0;
+    ++reset_window_frames;
+    if (const auto now = std::chrono::steady_clock::now(); now - reset_window >= std::chrono::seconds(5)) {
+        if (reset_frames * 10 > reset_window_frames) {
+            std::printf("Upscaler: history reset on %u of %u frames in 5 s\n", reset_frames, reset_window_frames);
+        }
+        reset_window = now;
+        reset_frames = reset_window_frames = 0;
+    }
     applied_preset = preset;
     applied_scale = preset_scale;
     applied_output = output;
@@ -510,18 +540,60 @@ bool TemporalUpscaler::OnFrameStart() {
     }
     // CameraMotion::OnDisplayPass has already cleared Depth(). Use the context's render
     // size, which survives the frame boundary (Performance 960 -> 1920 needs 32 phases).
-    const u32 phases = Scaled() ? Motion::JitterPhases(render_width, target_width)
-        : Motion::JitterPhases(scene_targets.Size().width, 1920);
+    const u32 phases = render_is_scene ? Motion::JitterPhases(render_width, target_width)
+        : Motion::JitterPhases(scene_targets.Size().width, SceneResolution::Native().width);
     jitter_index = jitter_index % phases + 1;
-    jitter = {Halton(jitter_index, 2) - 0.5f, Halton(jitter_index, 3) - 0.5f};
+    const float amount = JitterAmount();
+    jitter = {(Halton(jitter_index, 2) - 0.5f) * amount, (Halton(jitter_index, 3) - 0.5f) * amount};
     return changed;
+}
+
+float TemporalUpscaler::CameraSpeed() const {
+    const auto camera = camera_motion.CameraMatrices();
+    if (!camera.valid) {
+        return 0.0f;
+    }
+    const bool render_is_scene = Scaled() && !early_upscale;
+    const float width = float(render_is_scene ? render_width : scene_targets.Size().width);
+    const float height = float(render_is_scene ? render_height : scene_targets.Size().height);
+    constexpr float z = 5.0f;
+    float speed = 0.0f;
+    for (const float ndc_x : {0.0f, -0.7f, 0.7f}) {
+        const float vx = ndc_x * z / camera.proj[0];
+        std::array<float, 3> world;
+        for (int r = 0; r < 3; ++r) {
+            world[r] = camera.inv_view[r * 4] * vx + camera.inv_view[r * 4 + 2] * z + camera.inv_view[r * 4 + 3];
+        }
+        std::array<float, 3> before;
+        for (int r = 0; r < 3; ++r) {
+            before[r] = camera.prev_view[r * 4] * world[0] + camera.prev_view[r * 4 + 1] * world[1] +
+                        camera.prev_view[r * 4 + 2] * world[2] + camera.prev_view[r * 4 + 3];
+        }
+        const float w = std::max(before[2], 1e-4f);
+        const float dx = (before[0] * camera.prev_proj[0] / w - ndc_x) * 0.5f * width;
+        const float dy = before[1] * camera.prev_proj[1] / w * 0.5f * height;
+        const float moved = std::sqrt(dx * dx + dy * dy);
+        speed = std::max(speed, std::isfinite(moved) ? moved : 0.0f);
+    }
+    return speed;
+}
+
+float TemporalUpscaler::JitterAmount() {
+    const auto& settings = BbSettings::Get();
+    if (!settings.dlss_jitter_fade.load(std::memory_order_relaxed) ||
+        settings.upscaler != BbSettings::UpscalerDlss) {
+        jitter_speed = 0.0f;
+        return 1.0f;
+    }
+    jitter_speed = std::max(CameraSpeed(), jitter_speed * 0.85f);
+    return 1.0f - std::clamp((jitter_speed - 0.25f) / 0.75f, 0.0f, 1.0f);
 }
 
 void TemporalUpscaler::OnDispatch(u64 cs_hash) {
     if (cs_hash != trigger_hash) {
         return;
     }
-    if (!done_this_frame && !failed && !Scaled()) {
+    if (!done_this_frame && !failed && (!Scaled() || early_upscale)) {
         done_this_frame = true;
         // bbport: a frame with several G-buffer passes is a menu's 3D preview (character
         // creation): its "scene" is one of the previews, and accumulating it into the history
@@ -973,8 +1045,11 @@ void TemporalUpscaler::RecordTaa(vk::CommandBuffer cmdbuf, vk::ImageView color,
 void TemporalUpscaler::ExtraSharpen(vk::Image target, bool ldr, u32 w, u32 h) {
     const auto& settings = BbSettings::Get();
     // FSR 3 and 4 sharpen up to 1 themselves (RCAS). DLSS has no sharpening of its own (NVIDIA
-    // retired its Sharpness parameter), so for DLSS this pass applies the whole 0..2.
-    const float own = settings.upscaler == BbSettings::UpscalerDlss ? 0.0f : 1.0f;
+    // retired its Sharpness parameter), nor has XeSS-SR, so for them this pass applies the whole 0..2.
+    const float own = settings.upscaler == BbSettings::UpscalerDlss ||
+                              settings.upscaler == BbSettings::UpscalerXess
+                          ? 0.0f
+                          : 1.0f;
     const float extra = std::clamp(settings.sharpness.load(), 0.0f, 2.0f) - own;
     if (!settings.sharpen || extra <= 0.0f) {
         return;
@@ -1149,7 +1224,7 @@ void TemporalUpscaler::OnBlendedSceneDraw() {
         return;
     }
     if (!EnsureResources(w, h, Scaled() ? target_width : ow,
-                         Scaled() ? target_height : oh, !Scaled())) {
+                         Scaled() ? target_height : oh, !Scaled() || early_upscale)) {
         failed = true;
         return;
     }
@@ -1746,7 +1821,7 @@ void TemporalUpscaler::OnDraw(u64 vs_hash, VideoCore::ImageId color,
         !FrameCapture::IsDisplayBuffer(image.info.guest_address);
     switch (UiComposition::Choose(Scaled(), ui_draw,
                                   camera_motion.Ready() && ldr_target == color,
-                                  Active() && !failed)) {
+                                  Active() && !failed && !early_upscale)) {
     case UiComposition::Background::None:
         return;
     case UiComposition::Background::Temporal:
@@ -1792,7 +1867,7 @@ void TemporalUpscaler::OnDisplayPass(VAddr address, VideoCore::ImageId frame) {
     // bbport: a frame with no UI draw at all (the HUD hidden in the game's options, #23) reaches
     // its display pass without the upscale its first UI draw would start: run it here, so the
     // display pass reads the upscaled frame instead of the render-size one.
-    if (Scaled() && !ui_phase && ldr_target && camera_motion.Ready() && Active() && !failed) {
+    if (Scaled() && !early_upscale && !ui_phase && ldr_target && camera_motion.Ready() && Active() && !failed) {
         RunScaled();
         if (ui_phase && hdr_native.WantsUiStart() && HdrNative::Wanted()) {
             hdr_native.OnUiStart(HdrUiImage());
@@ -2018,8 +2093,18 @@ void TemporalUpscaler::RunUiOnly(VideoCore::ImageId color_id, VideoCore::ImageId
     // the stage is copied, over a cleared image. UI the game draws past the stage still shows.
     // A frame of the world is copied whole: with no upscaler every frame comes here, and the
     // world's sides were cut to black bars (widescreen worked only with an upscaler on).
+    // With the menus' movies widened (BB_WIDE_UI_MOVIES or the PC options' BB_WIDE_OPTION_MOVIE,
+    // start/main.cpp) the menus' full-screen pictures, dims and fades are drawn beside the stage
+    // too, so such a frame is copied whole as well: a loading screen's frames alternate between this
+    // copy and the upscaler's, and its picture flickered between the full width and the stage.
+    static const bool wide_movies = [] {
+        const char* movies = std::getenv("BB_WIDE_UI_MOVIES");
+        const char* options = std::getenv("BB_WIDE_OPTION_MOVIE");
+        return (movies && *movies) || (options && *options);
+    }();
     s32 x0 = 0, y0 = 0, x1 = s32(ui_width), y1 = s32(ui_height);
-    if (const auto ui = UiComposition::UiSize(); !world && (ui[0] != 1920.0f || ui[1] != 1080.0f)) {
+    if (const auto ui = UiComposition::UiSize();
+        !world && !wide_movies && (ui[0] != 1920.0f || ui[1] != 1080.0f)) {
         const auto fit = UiComposition::Fit(ui_width, ui_height, ui);
         const float stage = UiComposition::StageScale(ui), w = 1920.0f * stage, h = 1080.0f * stage;
         x0 = std::clamp(s32(std::lround(fit.offset[0] + fit.scale[0] * (ui[0] - w) / 2)), 0, s32(ui_width));
@@ -2072,7 +2157,9 @@ void TemporalUpscaler::RunUiOnly(VideoCore::ImageId color_id, VideoCore::ImageId
         barrier.newLayout = vk::ImageLayout::eGeneral;
         cmd.pipelineBarrier2({.imageMemoryBarrierCount = 1, .pImageMemoryBarriers = &barrier});
     });
-    reset = true; // returning to 3D must not reuse history from before a menu/loading screen
+    if (!early_upscale || !dispatched_last_frame) {
+        reset = true; // returning to 3D must not reuse history from before a menu/loading screen
+    }
     done_this_frame = ui_phase = true;
     ui_color = color_id;
     ui_depth = depth_id;
@@ -2186,7 +2273,9 @@ void TemporalUpscaler::RunScaled() {
         if (BbSettings::Get().upscaler == BbSettings::UpscalerTaa) {
             RecordTaa(cmdbuf, color_view, depth_view);
         } else {
-            if (BbSettings::Get().upscaler == BbSettings::UpscalerDlss) {
+            // bbport: DLSS and XeSS take the frame as it is (XeSS with its LDR input flag).
+            if (BbSettings::Get().upscaler == BbSettings::UpscalerDlss ||
+                BbSettings::Get().upscaler == BbSettings::UpscalerXess) {
             ok4 = RecordFsr4(cmdbuf,
                              {color_image, color_view, source_width, source_height,
                               color.info.pixel_format},
@@ -2624,10 +2713,37 @@ bool TemporalUpscaler::UseFsr4() const {
     if (selected == BbSettings::UpscalerDlss) {
         return dlss && dlss->Available() && !fsr4_failed;
     }
-    const bool supported = selected == BbSettings::UpscalerFsr411
-                               ? instance.IsFsr411Available() // the replay or fsr4vk
-                               : instance.IsFsr4Int8Supported();
+    if (selected == BbSettings::UpscalerXess) {
+        return xess && xess->Available() && !fsr4_failed;
+    }
+    const bool supported = selected == BbSettings::UpscalerFsr      ? instance.IsFsrSdkAvailable()
+                           : selected == BbSettings::UpscalerFsr411 ? instance.IsFsr411Available() // the replay or fsr4vk
+                                                                    : instance.IsFsr4Int8Supported();
     return BbSettings::IsFsr4(selected) && supported && !fsr4_failed && !fsr4_building;
+}
+
+bool TemporalUpscaler::Fsr4TooSlow(float frame_ms) {
+    static const bool guard = [] {
+        const char* env = std::getenv("BB_FSR4_SLOW_GUARD");
+        return !(env && env[0] == '0');
+    }();
+    const u32 selected = 1u << BbSettings::Get().upscaler.load();
+    if (!guard || reset || (slow_guard_used & selected)) {
+        slow_window_ms = 0.0f;
+        slow_window_frames = slow_frames = 0;
+        return false;
+    }
+    slow_window_ms += frame_ms;
+    ++slow_window_frames;
+    slow_frames += frame_ms >= 50.0f ? 1 : 0;
+    if (slow_window_ms < 5000.0f) {
+        return false;
+    }
+    const bool slow = slow_frames * 10 >= slow_window_frames * 9;
+    slow_window_ms = 0.0f;
+    slow_window_frames = slow_frames = 0;
+    slow_guard_used |= slow ? selected : 0u;
+    return slow;
 }
 
 bool TemporalUpscaler::RecordFsr4(vk::CommandBuffer cmdbuf, Fsr4Upscaler::Image color,
@@ -2638,6 +2754,11 @@ bool TemporalUpscaler::RecordFsr4(vk::CommandBuffer cmdbuf, Fsr4Upscaler::Image 
     const float sign =
         BbToggle::Disabled(1u << 26) != settings.fsr4_invert_jitter.load() ? -1.0f : 1.0f;
     const bool use_dlss = settings.upscaler == BbSettings::UpscalerDlss && dlss;
+    const bool use_xess = settings.upscaler == BbSettings::UpscalerXess && xess;
+    const bool vendor = use_dlss || use_xess; // DLSS or XeSS, not the FSR 4 paths
+    if (use_dlss && CameraSpeed() > float(w) * 0.5f) {
+        reset = true;
+    }
     const Fsr4Upscaler::Frame frame{
         .cmdbuf = cmdbuf,
         .color = color,
@@ -2657,15 +2778,27 @@ bool TemporalUpscaler::RecordFsr4(vk::CommandBuffer cmdbuf, Fsr4Upscaler::Image 
         .sharpen = settings.sharpen,
         .reset = reset,
         .auto_exposure = settings.fsr4_auto_exposure,
-        .reactive = reactive && use_dlss
+        .reactive = reactive && vendor
                         ? Fsr4Upscaler::Image{vk::Image(reactive_image), *reactive_view, w, h,
                                               vk::Format::eR8Unorm}
                         : Fsr4Upscaler::Image{},
     };
-    const bool ok = use_dlss ? dlss->Record(frame) : fsr4->Record(frame);
+    const bool ok = use_dlss ? dlss->Record(frame) : use_xess ? xess->Record(frame) : fsr4->Record(frame);
+    if (ok && !vendor && Fsr4TooSlow(frame_ms)) {
+        static const std::string slow =
+            "too slow on this GPU (under 20 FPS for 5 s); you can select it again to retry";
+        BbSettings::Get().fsr4_problem = slow.c_str();
+        const bool to_sdk = settings.upscaler != BbSettings::UpscalerFsr && instance.IsFsrSdkAvailable();
+        std::printf("Upscaler: FSR 4 too slow on this GPU (under 20 FPS for 5 s); falling back to %s "
+                    "(BB_FSR4_SLOW_GUARD=0 keeps it)\n", to_sdk ? "FSR (AMD FSR SDK)" : "FSR 3.1");
+        BbSettings::Get().upscaler = to_sdk ? BbSettings::UpscalerFsr : BbSettings::UpscalerFsr3;
+        fsr4_failed = !to_sdk;
+        reset = true;
+        return ok;
+    }
     // The menu shows the reason; it outlives this frame (FSR 4 keeps its last message).
     static std::string shown;
-    const char* problem = use_dlss ? dlss->Problem() : fsr4->Problem();
+    const char* problem = use_dlss ? dlss->Problem() : use_xess ? xess->Problem() : fsr4->Problem();
     if (!problem) {
         BbSettings::Get().fsr4_problem = nullptr;
     } else if (shown != problem) {
@@ -2676,12 +2809,18 @@ bool TemporalUpscaler::RecordFsr4(vk::CommandBuffer cmdbuf, Fsr4Upscaler::Image 
         BbSettings::Get().fsr4_problem = kept[next].c_str();
         next = (next + 1) % kept.size();
     }
-    if (!ok && !use_dlss && fsr4->Preparing()) {
+    if (!ok && !vendor && fsr4->Preparing()) {
         // Its model is being built: FSR 3.1 meanwhile (EnsureResources makes its context next
         // frame), and FSR 4 again when the build is done (the per-frame settings above).
         fsr4_building = true;
         reset = true;
-    } else if (!ok && !use_dlss && fsr4->Fatal() &&
+    } else if (!ok && !vendor && fsr4->Fatal() &&
+               settings.upscaler == BbSettings::UpscalerFsr411 && instance.IsFsrSdkAvailable()) {
+        std::printf("Upscaler: FSR 4.1.1 (fsr4vk) failed; falling back to FSR (AMD FSR SDK)\n");
+        BbSettings::Get().upscaler = BbSettings::UpscalerFsr;
+        fsr4->ClearFailure();
+        reset = true;
+    } else if (!ok && !vendor && fsr4->Fatal() &&
                settings.upscaler == BbSettings::UpscalerFsr411 && instance.IsFsr4Int8Supported()) {
         // bbport: FSR 4.1.1 cannot run here (fsr4vk failed on this driver): the built-in FSR 4
         // model next, which needs only the GPU features this one has; FSR 3.1 if that fails too.
@@ -2689,7 +2828,7 @@ bool TemporalUpscaler::RecordFsr4(vk::CommandBuffer cmdbuf, Fsr4Upscaler::Image 
         BbSettings::Get().upscaler = BbSettings::UpscalerFsr4;
         fsr4->ClearFailure();
         reset = true;
-    } else if (!ok && (use_dlss ? dlss->Fatal() : fsr4->Fatal())) {
+    } else if (!ok && (use_dlss ? dlss->Fatal() : use_xess ? xess->Fatal() : fsr4->Fatal())) {
         std::printf("Upscaler: falling back to FSR 3.1\n");
         BbSettings::Get().upscaler = BbSettings::UpscalerFsr3;
         fsr4_failed = true; // EnsureResources creates the FSR 3 context next frame

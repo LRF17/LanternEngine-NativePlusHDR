@@ -28,8 +28,8 @@ root=out/package/LanternEngine
 bin=$root/engine/out
 rm -rf out/package
 mkdir -p "$bin/gpu"
-install -m755 out/bb-probe out/bb-gpu-capabilities packaging/linux/bb-start "$bin/"
-for tool in bb-engine-assets bb-shader-lab; do
+install -m755 out/bb-probe out/bb-gpu-capabilities out/bb-isa-scan packaging/linux/bb-start "$bin/"
+for tool in bb-engine-assets bb-ui-4k bb-shader-lab; do
     [[ ! -f out/$tool ]] || install -m755 "out/$tool" "$bin/"
 done
 install -m755 out/gpu/libbbgpu.so "$bin/gpu/"
@@ -49,7 +49,7 @@ install -m644 out/libnvidia-ngx-dlss.so.* out/LICENSE-DLSS-SDK.txt "$bin/"
 
 cp run.sh "$root/engine/"
 cp -r scripts patches data licenses "$root/engine/"
-for item in fsr4_shaders shader-catalog gamecontrollerdb.txt; do
+for item in fsr4_shaders shader-catalog gamecontrollerdb.txt lamp2lamp.bin lamp2lamp-bosses.bin debug-font; do
     [[ ! -e $template/engine/$item ]] || cp -r "$template/engine/$item" "$root/engine/"
 done
 cp "$template/lantern.ini" "$root/engine/lantern.default.ini"

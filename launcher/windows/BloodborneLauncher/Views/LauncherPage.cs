@@ -325,6 +325,10 @@ namespace BloodborneLauncher.Views
             var count = Rows.Children.OfType<SettingRow>().Count(r => r.Visibility == Visibility.Visible);
             _label.Text = count > 0 ? $"{_title} ({count})" : _title;
         }
+
+        /// <summary>Counts the rows again: a choice elsewhere on the page shows and hides them (the HDR
+        /// source, which leaves Native+ its tone mapper and takes Native's UI colour away).</summary>
+        public void RefreshCount() => ShowCount();
     }
 
     /// <summary>
@@ -488,6 +492,7 @@ namespace BloodborneLauncher.Views
         protected SettingRow Add(SettingRow row, Panel? into = null)
         {
             (into ?? Body).Children.Add(row);
+            LastRow = row;
             row.Searchable = true;
             row.Section = _group;
             _searchRows.Add(row);
@@ -498,6 +503,7 @@ namespace BloodborneLauncher.Views
 
         /// <summary>Every row put in with Add, in page order: the settings search's index of this
         /// page, built as the page is (no walk through the page's tree at each search).</summary>
+        protected SettingRow? LastRow { get; private set; }
         private readonly List<SettingRow> _searchRows = new();
 
         /// <summary>

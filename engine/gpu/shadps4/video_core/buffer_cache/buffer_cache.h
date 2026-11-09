@@ -126,6 +126,14 @@ public:
     /// copy, VRAM], with their bytes.
     static inline bool hle_obtain = false;
     static inline std::array<u64, 6> hle_path_calls{}, hle_path_bytes{};
+    static inline std::array<u64, 6> obtain_paths{};
+    [[nodiscard]] u64 BindGeneration() const noexcept;
+    [[nodiscard]] bool Persistent(const Buffer* buffer) const noexcept {
+        return buffer != &stream_buffer && buffer != shadow_buffer.get();
+    }
+    void NoteBound(VAddr address, u64 size) {
+        NoteUse(address, size);
+    }
 
     /// Finds a buffer for the specified region.
     [[nodiscard]] std::pair<const Buffer*, u64> ObtainBuffer(VAddr device_addr, u32 size,
@@ -469,6 +477,7 @@ private:
     };
     std::vector<Demotion> demotions_waiting;
     IntervalList<> dynamic_blocks;                     ///< bound in place even when Garlic
+    IntervalList<> gx_upload_blocks;
     /// Bytes last written through a path the GPU side hears of (file reads, the game's resource
     /// loaders, DMA) and not handed out again by the game's GPU memory allocator since. Only blocks
     /// made of such bytes keep a VRAM copy: anything else in a block may be written by code we do
@@ -535,6 +544,7 @@ private:
         u32 strikes = 0; ///< times it went in place for CPU writes
     };
     std::unordered_map<u64, DynamicRetry> dynamic_retry;
+    void ProcessGxUploadArena();
     void NoteDynamic(u64 block);
     void ProcessDynamicRetries(u32 now);
     /// Blocks QueuePromotions gave a VRAM copy: uploaded whole at the next packet. Their slot may
