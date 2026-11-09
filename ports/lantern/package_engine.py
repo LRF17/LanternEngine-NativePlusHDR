@@ -32,6 +32,10 @@ while queue:
         if name.lower() in seen:
             continue
         seen.add(name.lower())
+        # The Vulkan loader is the GPU driver's (System32), as in Lantern's own package: a copy
+        # beside the engine would take its place.
+        if name.lower() == 'vulkan-1.dll':
+            continue
         source = clang_bin / name
         if source.is_file():
             target = out / name

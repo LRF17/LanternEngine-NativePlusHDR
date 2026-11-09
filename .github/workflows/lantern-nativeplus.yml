@@ -152,6 +152,10 @@ jobs:
       - uses: actions/setup-dotnet@v4
         with:
           dotnet-version: '8.0.x'
+      # NativeAOT finds the MSVC linker through vswhere.exe, which it runs from the PATH.
+      - name: vswhere on the PATH
+        shell: pwsh
+        run: Add-Content $env:GITHUB_PATH "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer"
       # Lantern 0.9.40's launcher: the native one (LanternLauncher, NativeAOT, published as
       # "Lantern Engine.exe"); the WPF one no longer builds there.
       - name: Build launcher with Native+ HDR
@@ -185,7 +189,7 @@ jobs:
         env:
           BB_RELEASE_VERSION: ${{ steps.version.outputs.full }}
         run: python ports/lantern/distribution.py engine-src stage distribution runtime-downloads
-      - name: Smoke check shipped preparation runtime
+      - name: Check the package
         run: python ports/lantern/package_check.py distribution
       - uses: actions/upload-artifact@v4
         with:
