@@ -454,6 +454,9 @@ namespace BloodborneLauncher.Core
         {
             "boot.bin", "boot-libc.bin", "analysis.json", "link.json", "libc-link.json", "entry.bin",
             "content-profile.json", "patches-info.json",
+            // Native+ HDR packages before 0.9.40.1 shipped a Vulkan loader in engine\out; an update
+            // copies over and would keep it in place of the GPU driver's, as Lantern's package has.
+            "vulkan-1.dll",
         };
 
         private static readonly string[] OldEngineFolders = { "scripts", "tools", "fsr4_shaders" };
