@@ -29,6 +29,29 @@ namespace BloodborneLauncher.Core
 
         public static bool ToolFound => File.Exists(Tool);
 
+        public static bool WholePng(string path)
+        {
+            try
+            {
+                var info = new FileInfo(path);
+                if (!info.Exists || info.Length < 57) return false;
+                using var file = info.OpenRead();
+                Span<byte> head = stackalloc byte[8];
+                if (file.Read(head) != 8 || head[0] != 0x89 || head[1] != (byte)'P' || head[2] != (byte)'N' || head[3] != (byte)'G') return false;
+                file.Seek(-12, SeekOrigin.End);
+                Span<byte> tail = stackalloc byte[12];
+                if (file.Read(tail) != 12) return false;
+                if (tail[4] == (byte)'I' && tail[5] == (byte)'E' && tail[6] == (byte)'N' && tail[7] == (byte)'D') return true;
+            }
+            catch (IOException)
+            {
+            }
+            catch (UnauthorizedAccessException)
+            {
+            }
+            return false;
+        }
+
         public static long PackBytes()
         {
             try
@@ -47,7 +70,7 @@ namespace BloodborneLauncher.Core
                 if (Directory.Exists(dir)) Directory.Delete(dir, true);
         }
 
-        public static async Task BuildAsync(string gameDir, IProgress<Step> progress, CancellationToken cancel)
+        public static async Task BuildAsync(string gameDir, IProgress<Step> progress, CancellationToken cancel, bool half = false)
         {
             var menu = Path.Combine(gameDir, "dvdroot_ps4", "menu");
             if (!Directory.Exists(menu))
@@ -65,11 +88,16 @@ namespace BloodborneLauncher.Core
             await RunAsync(Tool, new[] { "export", menu, source }, null, cancel);
 
             var all = Directory.GetFiles(source, "*.png").Select(Path.GetFileName).ToList();
-            var missing = all.Where(name => !File.Exists(Path.Combine(upscaled, name!))).ToList();
+            var missing = all.Where(name => !WholePng(Path.Combine(upscaled, name!))).ToList();
+            foreach (var name in missing)
+            {
+                try { File.Delete(Path.Combine(upscaled, name!)); } catch (IOException) { } catch (UnauthorizedAccessException) { }
+            }
             if (Directory.Exists(todo)) Directory.Delete(todo, true);
             Directory.CreateDirectory(todo);
             foreach (var name in missing)
                 File.Copy(Path.Combine(source, name!), Path.Combine(todo, name!));
+            var failure = "";
             if (missing.Count > 0)
             {
                 using var watch = new CancellationTokenSource();
@@ -77,7 +105,7 @@ namespace BloodborneLauncher.Core
                 {
                     while (!watch.IsCancellationRequested)
                     {
-                        var done = all.Count(name => File.Exists(Path.Combine(upscaled, name!)));
+                        var done = all.Count(name => WholePng(Path.Combine(upscaled, name!)));
                         progress.Report(new Step(L.F($"Upscaling {done} of {all.Count} textures on the GPU…"), 0.05 + 0.85 * done / all.Count));
                         try { await Task.Delay(1000, watch.Token); } catch (OperationCanceledException) { }
                     }
@@ -85,7 +113,30 @@ namespace BloodborneLauncher.Core
                 try
                 {
                     var files = Math.Clamp(Environment.ProcessorCount / 2, 2, 8);
-                    await RunAsync(upscaler, new[] { "-i", todo, "-o", upscaled, "-n", Model, "-f", "png", "-j", $"{files}:1:{files}" }, Path.GetDirectoryName(upscaler), cancel);
+                    try
+                    {
+                        await RunAsync(upscaler, new[] { "-i", todo, "-o", upscaled, "-n", Model, "-f", "png", "-j", $"{files}:1:{files}" }, Path.GetDirectoryName(upscaler), cancel);
+                    }
+                    catch (InvalidOperationException e)
+                    {
+                        failure = e.Message;
+                    }
+                    var left = all.Where(name => !WholePng(Path.Combine(upscaled, name!))).ToList();
+                    if (left.Count > 0)
+                    {
+                        Directory.Delete(todo, true);
+                        Directory.CreateDirectory(todo);
+                        foreach (var name in left)
+                            File.Copy(Path.Combine(source, name!), Path.Combine(todo, name!));
+                        try
+                        {
+                            await RunAsync(upscaler, new[] { "-i", todo, "-o", upscaled, "-n", Model, "-f", "png", "-t", "128", "-j", "1:1:1" }, Path.GetDirectoryName(upscaler), cancel);
+                        }
+                        catch (InvalidOperationException e)
+                        {
+                            failure = e.Message;
+                        }
+                    }
                 }
                 finally
                 {
@@ -93,13 +144,13 @@ namespace BloodborneLauncher.Core
                     await counting;
                 }
             }
-            var still = all.Count(name => !File.Exists(Path.Combine(upscaled, name!)));
+            var still = all.Count(name => !WholePng(Path.Combine(upscaled, name!)));
             if (still > 0)
-                throw new InvalidOperationException(L.F($"{still} textures were not upscaled. Your GPU driver may not support Vulkan compute; try again after a driver update."));
+                throw new InvalidOperationException(L.F($"{still} textures were not upscaled. Your GPU driver may not support Vulkan compute, or video memory ran out; try again after a driver update, with other programs closed.") + (failure.Length > 0 ? "\n" + failure : ""));
 
             if (Directory.Exists(PackDir)) File.Delete(Marker);
             var packed = new Regex(@"^packed (\d+) of (\d+)$");
-            await RunAsync(Tool, new[] { "pack", upscaled, PackDir }, null, cancel, line =>
+            await RunAsync(Tool, half ? new[] { "pack", upscaled, PackDir, "half" } : new[] { "pack", upscaled, PackDir }, null, cancel, line =>
             {
                 if (packed.Match(line) is { Success: true } m && int.TryParse(m.Groups[1].Value, out var n) && int.TryParse(m.Groups[2].Value, out var total) && total > 0)
                     progress.Report(new Step(L.F($"Packing {n} of {total} textures…"), 0.9 + 0.1 * n / total));

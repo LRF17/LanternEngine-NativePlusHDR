@@ -6,7 +6,9 @@
 #include <atomic>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 #include <mutex>
+#include <string>
 #include <thread>
 #include <windows.h>
 #include "video_core/renderer_vulkan/vk_instance.h"
@@ -104,10 +106,31 @@ bool PcModelGpu(const Vulkan::Instance& instance) {
                 return false;
             }
         }
-        if (instance.GetVendorID() != 0x1002) {
-            std::printf("Guest memory: the PC memory model on this GPU (vendor 0x%04x) is new; "
-                        "\"Write fault sites\" name writers its hooks miss\n",
+        const char* any = std::getenv("BB_PC_MODEL_ANY_GPU");
+        if (instance.GetVendorID() != 0x10de && !(any && any[0] == '1')) {
+            std::printf("Guest memory: the PC memory model stays off on this GPU (vendor 0x%04x): players "
+                        "with AMD and Intel GPUs reported broken lighting and a falling frame rate with "
+                        "it (BB_PC_MODEL_ANY_GPU=1 turns it on)\n",
                         instance.GetVendorID());
+            return false;
+        }
+        if (const char* user = std::getenv("BB_GPU_USER_DIR"); user && *user && !(any && any[0] == '1')) {
+            const std::string path = std::string(user) + "/pc-model-hung";
+            if (std::FILE* mark = std::fopen(path.c_str(), "r")) {
+                char tag[4] = {};
+                const bool current = std::fread(tag, 1, 3, mark) == 3 && std::memcmp(tag, "[2]", 3) == 0;
+                std::fclose(mark);
+                if (!current) {
+                    std::remove(path.c_str());
+                    std::printf("Guest memory: an older pc-model-hung mark was removed: the freezes that wrote it "
+                                "came from the object motion worker, fixed since\n");
+                    return true;
+                }
+                std::printf("Guest memory: the PC memory model stays off on this PC: the GPU stopped "
+                            "answering with it in an earlier session (delete user\\pc-model-hung or set "
+                            "BB_PC_MODEL_ANY_GPU=1 to try it again)\n");
+                return false;
+            }
         }
         return true;
     }();

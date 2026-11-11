@@ -47,7 +47,7 @@ while queue:
             queue.append(target)
         # Windows system DLLs remain provided by Windows; never copy them from the runner.
 # The GPU cache's identity (engine/build.sh): a compiler change recompiles the players' caches.
-for name in ['gpu-cache.id', 'gpu-cache.legacy.id']:
+for name in ['gpu-cache.id', 'gpu-cache.legacy.id', 'gpu-cache.accepted.id']:
     if not (engine / 'out' / name).is_file():
         raise RuntimeError(f'Missing build output: {engine / "out" / name}')
     shutil.copy2(engine / 'out' / name, out / name)

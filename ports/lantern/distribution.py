@@ -14,8 +14,8 @@ import urllib.request
 from zipfile import ZipFile
 
 BASE_URL = ('https://github.com/Awakenchan/LanternEngine/releases/download/'
-            'v0.9.40/LanternEngine-v0.9.40-win64.zip')
-BASE_SHA = 'd0401188f4d755880c26aad0a577beeaea7dc5d9ba355c2764e64134dc4d1055'
+            'v0.9.42/LanternEngine-v0.9.42-win64.zip')
+BASE_SHA = '25854036176c94bba326af81302eb3f3e50684241998c263d764c68daa255669'
 
 
 def archive(url, digest, cache):
@@ -69,9 +69,9 @@ def assemble(engine, overlay, destination, cache):
     version = os.environ.get('BB_RELEASE_VERSION') or (Path(__file__).with_name('VERSION')
                                                         .read_text(encoding='utf-8').strip())
     (destination / 'package.json').write_text(json.dumps({
-        'version': version, 'engine': 'lantern-fps95-nativeplus-v8',
+        'version': version, 'engine': 'lantern-fps95-nativeplus-v10',
         'source': 'https://github.com/LRF17/LanternEngine-NativePlusHDR/tree/lantern-Native+HDR',
-        'runtime_resources': 'v0.9.40',
+        'runtime_resources': 'v0.9.42',
     }, indent=2), encoding='utf-8')
     # Explicit shipped HDR defaults in the shipped settings (engine\lantern.default.ini, which the
     # launcher copies to lantern.ini when a folder has neither it nor an older bbport.ini), so no
@@ -86,7 +86,7 @@ def assemble(engine, overlay, destination, cache):
     ini.write_text('\n'.join(lines + [f'{k}={v}' for k, v in defaults.items()]) + '\n', encoding='utf-8')
     required = ['Lantern Engine.exe', 'Bloodborne.exe', 'engine/out/bb-probe.exe', 'engine/out/bb-start.exe',
                 'engine/out/bb-engine-assets.exe', 'engine/out/bb-gpu-capabilities.exe',
-                'engine/out/bb-shader-lab.exe', 'engine/out/bb-isa-scan.exe', 'engine/out/gpu-cache.id',
+                'engine/out/bb-shader-lab.exe', 'engine/out/bb-isa-scan.exe', 'engine/out/gpu-cache.id', 'engine/out/gpu-cache.accepted.id',
                 'engine/out/nvngx_dlss.dll', 'engine/patches/redzone.json',
                 'licenses/RenoDX-MIT.txt']
     for name in required:

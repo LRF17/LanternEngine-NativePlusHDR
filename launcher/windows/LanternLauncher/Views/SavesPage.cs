@@ -46,6 +46,7 @@ namespace BloodborneLauncher.Views
                 SmallButton(L.T("Import…"), SymbolRegular.FolderArrowRight24, (_, _) => ImportSaves()), out _));
             _resetUser = IconButton(SymbolRegular.ArrowUndo24, L.T("Back to the default folder"), (_, _) =>
             {
+                if (GameBlocksProfiles()) return;
                 S.Set("user_dir", "");
                 Ws.SaveSoon();
                 Refresh();
@@ -56,6 +57,7 @@ namespace BloodborneLauncher.Views
                 _resetUser), out _userHint));
 
             Ws.PortChanged += Refresh;
+            Ws.SettingsReloaded += Refresh;
             Ws.GameStateChanged += Refresh;
         }
 
@@ -77,19 +79,38 @@ namespace BloodborneLauncher.Views
             var read = ++_hunterReads;
             var places = SaveEditorSession.Places(S);
             List<SaveCharacter> hunters;
-            try { hunters = await Task.Run(() => places.SelectMany(SaveStore.Characters).OrderByDescending(c => c.Saved).ToList()); }
-            catch { hunters = new(); }
+            var unread = new List<string>();
+            try
+            {
+                hunters = await Task.Run(() => places.SelectMany(place =>
+                {
+                    try { return SaveStore.Characters(place).ToList(); }
+                    catch (Exception e)
+                    {
+                        lock (unread) unread.Add(e.Message);
+                        return new List<SaveCharacter>();
+                    }
+                }).OrderByDescending(c => c.Saved).ToList());
+            }
+            catch (Exception e)
+            {
+                hunters = new();
+                unread.Add(e.Message);
+            }
             if (read != _hunterReads) return;
             _hunters.Children.Clear();
             if (hunters.Count == 0)
             {
-                _hunters.Children.Add(Text(L.T("No hunters yet: they show up here once the game has saved"), "Faint"));
+                _hunters.Children.Add(Text(unread.Count > 0
+                    ? L.T("The saves could not be read: ") + string.Join("; ", unread.Distinct())
+                    : L.T("No hunters yet: they show up here once the game has saved"), "Faint"));
                 return;
             }
             var current = PlayerProfiles.Current(S);
             var profiles = hunters.Select(h => h.Profile).Distinct(StringComparer.OrdinalIgnoreCase).Count();
-            foreach (var hunter in hunters)
-                _hunters.Children.Add(HunterTile(hunter, hunter.Profile.Equals(current, StringComparison.OrdinalIgnoreCase), profiles > 1));
+            var titles = SaveStore.Titles(hunters, profiles > 1);
+            for (var i = 0; i < hunters.Count; i++)
+                _hunters.Children.Add(HunterTile(hunters[i], hunters[i].Profile.Equals(current, StringComparison.OrdinalIgnoreCase), titles[i]));
         }
 
         private static readonly Color[] TileTones =
@@ -105,11 +126,11 @@ namespace BloodborneLauncher.Views
             return (int)(hash % (uint)TileTones.Length);
         }
 
-        private Control HunterTile(SaveCharacter hunter, bool playing, bool showProfile)
+        private Control HunterTile(SaveCharacter hunter, bool playing, string label)
         {
             var accent = LauncherTheme.Brush("AccentTextFillColorPrimaryBrush") is ISolidColorBrush { Color: var a } ? a : Colors.SteelBlue;
             var tone = LauncherTheme.Mix(TileTones[Tone(hunter.Profile + "/" + hunter.Slot + "/" + hunter.Name)], accent, 0.25);
-            var label = hunter.Name.Length > 0 ? hunter.Name : "?";
+            var initial = hunter.Name.Length > 0 ? hunter.Name : "?";
             var art = new Border
             {
                 Height = 128,
@@ -126,7 +147,7 @@ namespace BloodborneLauncher.Views
                 },
                 Child = new TextBlock
                 {
-                    Text = label.Substring(0, 1).ToUpperInvariant(),
+                    Text = initial.Substring(0, 1).ToUpperInvariant(),
                     FontSize = 56,
                     FontWeight = FontWeight.SemiBold,
                     Foreground = new SolidColorBrush(Color.FromArgb(0xE6, 0xFF, 0xFF, 0xFF)),
@@ -156,7 +177,6 @@ namespace BloodborneLauncher.Views
             }
             Line(L.F($"Level {hunter.Level}  ·  {hunter.BossesDefeated} bosses"));
             Line(L.F($"{SessionStats.Duration(TimeSpan.FromHours(hunter.PlayHours))} played") + "  ·  " + FriendlyTime(hunter.Saved));
-            if (showProfile) Line(hunter.Profile);
             Control action;
             if (playing)
             {
@@ -282,7 +302,7 @@ namespace BloodborneLauncher.Views
 
         private void ImportSaves()
         {
-            if (Ws.Game.Running)
+            if (GameRunning)
             {
                 Prompt.Tell(L.T("Import saves"), L.T("Close the game first: it has the saves open."));
                 return;
@@ -360,7 +380,7 @@ namespace BloodborneLauncher.Views
 
         private void RestoreBackup(SaveBackups.Backup backup)
         {
-            if (Ws.Game.Running)
+            if (GameRunning)
             {
                 Prompt.Tell(L.T("Restore saves"), L.T("Close the game first: it has the saves open."));
                 return;
@@ -382,9 +402,11 @@ namespace BloodborneLauncher.Views
             Refresh();
         }
 
+        private bool GameRunning => SaveStore.SavesInUse(Ws.Game.Running);
+
         private bool GameBlocksProfiles()
         {
-            if (!Ws.Game.Running) return false;
+            if (!GameRunning) return false;
             Prompt.Tell(L.T("Player profile"), L.T("Close the game before changing profiles: it is using this profile's saves."));
             return true;
         }
