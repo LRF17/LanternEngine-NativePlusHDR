@@ -1597,6 +1597,13 @@ index 0000000..eb42ebe
 +- **RenoDX** by Carlos Lopez (ShortFuse) and contributors, MIT: PsychoV-30, the user color grading,
 +  the hue correction, `CInfinityRollOff`, the gamut and LUT bridge, ported to GLSL
 +  ([clshortfuse/renodx](https://github.com/clshortfuse/renodx)).
+diff --git a/gpu-cache.accepted.id b/gpu-cache.accepted.id
+index 4ee945e..064e67a 100644
+--- a/gpu-cache.accepted.id
++++ b/gpu-cache.accepted.id
+@@ -1 +1,2 @@
+ 10318a912f823da3
++190c85da93b1c923
 diff --git a/gpu/CMakeLists.txt b/gpu/CMakeLists.txt
 index cf0d6a1..02420b6 100644
 --- a/gpu/CMakeLists.txt
@@ -5231,7 +5238,7 @@ index 79993a3..ab27c25 100644
  
      uses_push_descriptors = binding < instance.MaxPushDescriptors();
 diff --git a/gpu/shadps4/video_core/renderer_vulkan/vk_frame_generation.cpp b/gpu/shadps4/video_core/renderer_vulkan/vk_frame_generation.cpp
-index 91ec1d7..54992e9 100644
+index 9bc5ef2..958c17f 100644
 --- a/gpu/shadps4/video_core/renderer_vulkan/vk_frame_generation.cpp
 +++ b/gpu/shadps4/video_core/renderer_vulkan/vk_frame_generation.cpp
 @@ -19,6 +19,7 @@
@@ -6947,18 +6954,18 @@ index e619502..7762d31 100644
  
  enum SchedulerType {
 diff --git a/gpu/shadps4/video_core/renderer_vulkan/vk_rasterizer.cpp b/gpu/shadps4/video_core/renderer_vulkan/vk_rasterizer.cpp
-index 93f48bd..d6cacca 100644
+index 34991cf..1ae182d 100644
 --- a/gpu/shadps4/video_core/renderer_vulkan/vk_rasterizer.cpp
 +++ b/gpu/shadps4/video_core/renderer_vulkan/vk_rasterizer.cpp
-@@ -8,6 +8,7 @@
- #include "engine/gx_trace.h"
- #include "engine/gx_records.h"
+@@ -11,6 +11,7 @@
+ #include "engine/ring_constants.h"
+ #include "engine/gx_objects.h"
  #include <bit>
 +#include <cmath>
  #include <map>
  #include <thread>
  #include <unordered_set>
-@@ -36,6 +37,7 @@
+@@ -39,6 +40,7 @@
  #include "video_core/renderer_vulkan/liverpool_to_vk.h"
  #include "video_core/renderer_vulkan/pipeline_compile_queue.h"
  #include "video_core/renderer_vulkan/vk_gpu_savings.h"
@@ -6966,7 +6973,7 @@ index 93f48bd..d6cacca 100644
  #include "video_core/renderer_vulkan/vk_instance.h"
  #include "video_core/renderer_vulkan/vk_occlusion.h"
  #include "video_core/renderer_vulkan/vk_pipeline_cache.h"
-@@ -2647,6 +2649,17 @@ void Rasterizer::DrawRecord(const GraphicsPipeline* pipeline, const PreparedDraw
+@@ -2819,6 +2821,17 @@ void Rasterizer::DrawRecord(const GraphicsPipeline* pipeline, const PreparedDraw
              GetDrawOffsets(regs, pipeline->GetStage(Shader::SwStage::Vertex), pipeline->GetFetchShader());
          EffectsBeforeBind(regs, pipeline, is_indexed, index_offset, effect_first_vertex);
      }
@@ -6978,13 +6985,13 @@ index 93f48bd..d6cacca 100644
 +            ps && ps->pgm_hash == HdrChannel::ColorGradingHash && !HdrChannel::VanillaChain()) {
 +            const float strength =
 +                std::clamp(BbSettings::Get().hdr_scene_grading.load(), 0.0f, 100.0f) / 100.0f;
-+            push_data.bb_hdr[3] = std::bit_cast<u32>(strength) + 1u;
++            dc.push_data.bb_hdr[3] = std::bit_cast<u32>(strength) + 1u;
 +        }
 +    }
-     pipeline->BindResources(set_writes, push_data, {image_infos.data(), image_infos.size()},
-                             {buffer_infos.data(), buffer_infos.size()});
-     if (capture_draw) {
-@@ -2718,6 +2731,70 @@ void Rasterizer::DrawRecord(const GraphicsPipeline* pipeline, const PreparedDraw
+     pipeline->BindResources(dc.set_writes, dc.push_data, {dc.image_infos.data(), dc.image_infos.size()},
+                             {dc.buffer_infos.data(), dc.buffer_infos.size()});
+     if (dc.capture_draw) {
+@@ -2890,6 +2903,70 @@ void Rasterizer::DrawRecord(const GraphicsPipeline* pipeline, const PreparedDraw
              cmdbuf.endQuery(query.pool, query.index);
          }
      });
@@ -7017,8 +7024,8 @@ index 93f48bd..d6cacca 100644
 +            bits(half(bb.hdr_contrast)), bits(half(bb.hdr_saturation)),
 +            1u /* BT.2020, RenoDX's HDR target */ + (psychov ? 16u + highlights + shadows : 4u) + 1u,
 +            bits(psychov ? BbSettings::HueCorrectionPercent() / 100.0f : 0.0f)};
-+        std::array<u32, 9> game_reg{push_data.bb_hdr[3]};
-+        std::copy(push_data.bb_hdr2.begin(), push_data.bb_hdr2.end(), game_reg.begin() + 1);
++        std::array<u32, 9> game_reg{dc.push_data.bb_hdr[3]};
++        std::copy(dc.push_data.bb_hdr2.begin(), dc.push_data.bb_hdr2.end(), game_reg.begin() + 1);
 +        const vk::PipelineLayout layout = pipeline->GetLayout();
 +        constexpr u32 reg_offset = u32(offsetof(Shader::PushData, bb_hdr)) + 3u * 4u;
 +        constexpr u32 reg_size = u32(sizeof(ours));
@@ -7055,7 +7062,7 @@ index 93f48bd..d6cacca 100644
      EffectsAfterDraw(regs, pipeline, is_indexed, num_indices, num_instances, first_vertex);
      if (spatial_ao->Enabled()) {
          HqAoAfterDraw(pipeline, state);
-@@ -3998,6 +4075,28 @@ bool Rasterizer::IsComputeImageCopy(const Pipeline* pipeline) {
+@@ -4287,6 +4364,28 @@ bool Rasterizer::IsComputeImageCopy(const Pipeline* pipeline) {
      // Perform image copy
      VideoCore::Image& src_image = desc0.is_written ? image1 : image0;
      VideoCore::Image& dst_image = desc0.is_written ? image0 : image1;
@@ -7084,7 +7091,7 @@ index 93f48bd..d6cacca 100644
      runtime.CopyColorAndDepth(&src_image, &dst_image);
      return true;
  }
-@@ -5027,6 +5126,9 @@ vk::Sampler Rasterizer::CachedSampler(const AmdGpu::Sampler& sharp, bool is_dept
+@@ -5326,6 +5425,9 @@ vk::Sampler Rasterizer::CachedSampler(const AmdGpu::Sampler& sharp, bool is_dept
  // The sampler that reads each image is not known here: any point sampler counts.
  // BB_PROXY_POINT_NATIVE=0 (or experiment bit 0): proxies are read regardless, as before.
  bool Rasterizer::PointReadsNative(const Shader::Info& stage, const PreparedStage* prepared) const {
@@ -7094,7 +7101,7 @@ index 93f48bd..d6cacca 100644
      static const bool enabled = [] {
          const char* env = std::getenv("BB_PROXY_POINT_NATIVE");
          return !(env && env[0] == '0');
-@@ -5525,6 +5627,35 @@ RenderState Rasterizer::BeginRenderingFull(const GraphicsPipeline* pipeline) {
+@@ -5951,6 +6053,35 @@ RenderState Rasterizer::BeginRenderingFull(const GraphicsPipeline* pipeline) {
                            !same_size(texture_cache.GetImage(db_desc.first), 0))) {
          reduced = false;
      }
@@ -7130,16 +7137,16 @@ index 93f48bd..d6cacca 100644
      if (debug_pass) {
          if (db_desc.first) {
              const auto& depth = texture_cache.GetImage(db_desc.first);
-@@ -5534,7 +5665,7 @@ RenderState Rasterizer::BeginRenderingFull(const GraphicsPipeline* pipeline) {
+@@ -5960,7 +6091,7 @@ RenderState Rasterizer::BeginRenderingFull(const GraphicsPipeline* pipeline) {
          }
          std::printf("Scene pass: reduced %d %s\n", reduced, why.c_str());
      }
--    push_data.scene_size = reduced ? SceneResolution::Pack(scene_targets->Size()) : 0;
-+    push_data.scene_size = reduced && !own_size ? SceneResolution::Pack(scene_targets->Size()) : 0;
+-    dc.push_data.scene_size = reduced ? SceneResolution::Pack(scene_targets->Size()) : 0;
++    dc.push_data.scene_size = reduced && !own_size ? SceneResolution::Pack(scene_targets->Size()) : 0;
      if (BbStats::enabled) {
          BbStats::reduced_draws.fetch_add(reduced, std::memory_order_relaxed);
          BbStats::scene_draws.fetch_add(scene_started, std::memory_order_relaxed);
-@@ -5750,14 +5881,16 @@ RenderState Rasterizer::BeginRenderingFull(const GraphicsPipeline* pipeline) {
+@@ -6176,14 +6307,16 @@ RenderState Rasterizer::BeginRenderingFull(const GraphicsPipeline* pipeline) {
          state.num_layers = 1;
      }
  
@@ -7158,7 +7165,7 @@ index 93f48bd..d6cacca 100644
          ui_pass.active = false; // the memo keeps this scale for the pass
      }
      if (FrameCapture::Active()) {
-@@ -5783,8 +5916,17 @@ void Rasterizer::Resolve() {
+@@ -6209,8 +6342,17 @@ void Rasterizer::Resolve() {
      const auto& mrt1_hint = CbExtent(1);
      VideoCore::TextureCache::ImageDesc mrt0_desc{Regs().color_buffers[0], mrt0_hint};
      VideoCore::TextureCache::ImageDesc mrt1_desc{Regs().color_buffers[1], mrt1_hint};
@@ -7178,7 +7185,7 @@ index 93f48bd..d6cacca 100644
  
      ScopeMarkerBegin(fmt::format("Resolve:MRT0={:#x}:MRT1={:#x}",
                                   Regs().color_buffers[0].Address(),
-@@ -6377,7 +6519,12 @@ void Rasterizer::UpdateRasterizationState() const {
+@@ -6804,7 +6946,12 @@ void Rasterizer::UpdateRasterizationState() const {
  void Rasterizer::UpdateColorBlendingState(const GraphicsPipeline* pipeline) const {
      const auto& regs = Regs();
      auto& dynamic_state = scheduler.GetDynamicState();
@@ -8208,10 +8215,10 @@ index bb62e71..d8d8eae 100644
      {"Picture", "画面"},
      {"Unavailable: the game's code differs from version 1.09.", "不可用：游戏可执行文件与 1.09 版不一致。"},
 diff --git a/gpu/shim/bbport_overlay.cpp b/gpu/shim/bbport_overlay.cpp
-index 15af967..ed5efd8 100644
+index b9e6682..07a5630 100644
 --- a/gpu/shim/bbport_overlay.cpp
 +++ b/gpu/shim/bbport_overlay.cpp
-@@ -446,6 +446,315 @@ const char* Item(const char* english, const char* russian = nullptr) {
+@@ -447,6 +447,315 @@ const char* Item(const char* english, const char* russian = nullptr) {
      return russian ? BbSettings::MenuText(english, russian) : BbSettings::MenuText(english);
  }
  
@@ -8527,7 +8534,7 @@ index 15af967..ed5efd8 100644
  void HdrSection() {
      auto& s = BbSettings::Get();
      Section("HDR output", "Вывод HDR");
-@@ -480,13 +789,25 @@ void HdrSection() {
+@@ -481,13 +790,25 @@ void HdrSection() {
      }
      int mode = std::clamp(s.hdr_mode.load(), 0, BbSettings::HdrModeCount - 1);
      if (const char* label = Item("HDR mode", "Режим HDR")) {
@@ -8554,7 +8561,7 @@ index 15af967..ed5efd8 100644
              "Native: the brightness of lamps, fire, the moon and other highlights comes from the "
              "game's own HDR scene, before its tonemap clipped it to SDR white. Midtones, colours and "
              "the UI stay as in the SDR picture. Menus, loading screens and movies (no scene) use "
-@@ -494,7 +815,19 @@ void HdrSection() {
+@@ -495,7 +816,19 @@ void HdrSection() {
              "Нативный: яркость ламп, огня, луны и других светлых мест берётся из собственной "
              "HDR-сцены игры, до того как тонмаппинг обрезал её до белого SDR. Средние тона, цвета и "
              "интерфейс остаются как в SDR-картинке. В меню, на загрузках и в видеороликах (без сцены) "
@@ -8575,7 +8582,7 @@ index 15af967..ed5efd8 100644
      }
      if (const char* label = Item("Paper white (nits)", "Белый SDR (нит)")) {
          Slider(label, s.hdr_paper_white, BbSettings::HdrPaperWhiteMin, BbSettings::HdrPaperWhiteMax, "%.0f",
-@@ -541,18 +874,18 @@ void HdrSection() {
+@@ -542,18 +875,18 @@ void HdrSection() {
      }
      if (mode == BbSettings::HdrModeNative) {
          if (const char* label = Item("UI brightness", "Яркость интерфейса")) {
@@ -8598,7 +8605,7 @@ index 15af967..ed5efd8 100644
                  "1 — более насыщенные, как на мониторе с широким охватом в SDR (привычный вид; точный sRGB "
                  "рядом с ним может казаться блёклым). Меняются сразу."));
          }
-@@ -628,6 +961,9 @@ void PictureSection() {
+@@ -629,6 +962,9 @@ void PictureSection() {
              "0.25-8)."));
      }
      const bool vignette = s.graphics_vignette;
@@ -8608,7 +8615,7 @@ index 15af967..ed5efd8 100644
      bool moved = false;
      const auto slider = [&](const char* english, const char* russian, std::atomic<float>& value, float lo,
                              float hi, const char* format = "%.2f") {
-@@ -635,12 +971,16 @@ void PictureSection() {
+@@ -636,12 +972,16 @@ void PictureSection() {
              moved |= Slider(label, value, lo, hi, format);
          }
      };
@@ -8629,7 +8636,7 @@ index 15af967..ed5efd8 100644
      if (const char* label = Item("Vignette", "Виньетка")) {
          Checkbox(label, s.graphics_vignette);
          moved |= vignette != s.graphics_vignette;
-@@ -721,6 +1061,17 @@ void PictureSection() {
+@@ -722,6 +1062,17 @@ void PictureSection() {
          }
      }
      ImGui::EndDisabled();
@@ -8647,7 +8654,7 @@ index 15af967..ed5efd8 100644
  }
  
  void EffectsSection() {
-@@ -2105,6 +2456,7 @@ void Menu() {
+@@ -2106,6 +2457,7 @@ void Menu() {
          s.graphics_ao_quality != s.startup_ao_quality ||
          s.graphics_shadow_resolution != s.startup_shadow_resolution ||
          s.graphics_local_shadow_resolution != s.startup_local_shadow_resolution ||
@@ -8655,7 +8662,7 @@ index 15af967..ed5efd8 100644
          BbSettings::ResolutionNeedsRestart();
      for (int e = 0; e < BbSettings::EffectCount; ++e) {
          restart |= BbSettings::EffectChangeNeedsRestart(e, s.effects[e], s.startup_effects[e]);
-@@ -3009,6 +3361,11 @@ bool HandleEvent(const SDL_Event& event) {
+@@ -3032,6 +3384,11 @@ bool HandleEvent(const SDL_Event& event) {
              }
              return true;
          }
@@ -8668,7 +8675,7 @@ index 15af967..ed5efd8 100644
              ((event.key.key == SDLK_INSERT && (is_open || MenuKeys() != OverlayKeys::Off)) ||
               (is_open && event.key.key == SDLK_ESCAPE && !io.WantTextInput))) {
 diff --git a/gpu/shim/bbport_settings.cpp b/gpu/shim/bbport_settings.cpp
-index 7adb132..6e720db 100644
+index 7fac5fb..66bc896 100644
 --- a/gpu/shim/bbport_settings.cpp
 +++ b/gpu/shim/bbport_settings.cpp
 @@ -10,11 +10,14 @@
@@ -9005,7 +9012,7 @@ index 7adb132..6e720db 100644
                                               [&](const auto& k) { return k.first == key; });
                  if (it != keys.end()) {
 diff --git a/gpu/shim/bbport_settings.h b/gpu/shim/bbport_settings.h
-index 6b26b6e..0edca0a 100644
+index c656e0d..7788ccd 100644
 --- a/gpu/shim/bbport_settings.h
 +++ b/gpu/shim/bbport_settings.h
 @@ -6,6 +6,14 @@
@@ -9255,11 +9262,11 @@ index 5a24f5a..909afef 100644
                     '--patches', out / 'patches.bin', '--app0', merged,
                     '--user', os.environ.get('BB_USER_DIR', data / 'user'),
 diff --git a/src/sys/pad_host.c b/src/sys/pad_host.c
-index 291d743..ab95b7a 100644
+index c9df172..5eb73b2 100644
 --- a/src/sys/pad_host.c
 +++ b/src/sys/pad_host.c
-@@ -134,6 +134,7 @@ static SDL_Gamepad *current_gamepad(void) {
-     if (!sdl_state) sdl_state = SDL_WasInit(SDL_INIT_GAMEPAD) || SDL_InitSubSystem(SDL_INIT_GAMEPAD) ? 1 : -1;
+@@ -156,6 +156,7 @@ static SDL_Gamepad *current_gamepad(void) {
+     }
      if (sdl_state < 0) return NULL;
      if (gamepad && !SDL_GamepadConnected(gamepad)) {
 +        printf("Runtime: gamepad disconnected: %s\n", SDL_GetGamepadName(gamepad));

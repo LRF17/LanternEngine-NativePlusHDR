@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "online_fixes.h"
+#include "seamless_party.h"
 #include "engine_hooks.h"
 #include "shared_progress.h"
 #include "boss_rewards.h"
@@ -81,6 +82,24 @@ std::int64_t __attribute__((sysv_abi)) BeforeCharacterStep(std::uint64_t, const 
         Say("character id %llu", static_cast<unsigned long long>(id));
     }
     return 0;
+}
+
+constexpr std::size_t kMatchingRegion = 0x1c8af63;
+constexpr std::uint8_t kMatchingRegionGame[] = {0xc6, 0x43, 0x0f, 0x00};
+constexpr std::uint8_t kMatchingRegionWorldwide[] = {0xc6, 0x43, 0x0f, 0x01};
+
+bool MatchingWorldwide(std::uint8_t* image, std::size_t size) {
+    if (const char* e = std::getenv("BB_MATCHING_REGION"); e && std::strcmp(e, "game") == 0) {
+        Say("network: Matching Regions starts where the game has it (BB_MATCHING_REGION=game)");
+        return false;
+    }
+    if (!Matches(image, size, kMatchingRegion, kMatchingRegionGame, sizeof kMatchingRegionGame)) {
+        Say("network: Matching Regions' default is not the expected code; left as it is");
+        return false;
+    }
+    WriteCode(image + kMatchingRegion, kMatchingRegionWorldwide, sizeof kMatchingRegionWorldwide);
+    Say("network: Matching Regions starts at Worldwide, as bbhost 0.2.31 (BB_MATCHING_REGION=game keeps the game's)");
+    return true;
 }
 
 bool FixCharacterId(std::uint8_t* image, std::size_t size) {
@@ -167,6 +186,17 @@ const Rule kBellRules[] = {
     {"bells without Insight",
      {{0x157fa5c, {0x0f, 0x9f, 0xc0}, {0x30, 0xc0, 0x90}},
       {0x18c92bb, {0x41, 0x0f, 0xb6, 0x47, 0x38, 0xf7, 0xd8}, {0x31, 0xc0, 0x0f, 0x1f, 0x44, 0x00, 0x00}}}},
+    {"a guest gets a kill's full blood echoes",
+     {{0x18c522b, {0x08, 0xc1}, {0x30, 0xc9}}}},
+    {"no Insight or echoes for another hunter's death or leaving",
+     {{0x138cb02, {0xff, 0x90, 0xf0, 0x03, 0x00, 0x00}, {0x66, 0x0f, 0x1f, 0x44, 0x00, 0x00}},
+      {0x138cd84, {0xe8, 0xe7, 0x06, 0xf9, 0xff}, {0x0f, 0x1f, 0x44, 0x00, 0x00}},
+      {0x138cde1, {0xff, 0x90, 0xf0, 0x03, 0x00, 0x00}, {0x66, 0x0f, 0x1f, 0x44, 0x00, 0x00}},
+      {0x138d011, {0xff, 0x90, 0xf0, 0x03, 0x00, 0x00}, {0x66, 0x0f, 0x1f, 0x44, 0x00, 0x00}},
+      {0x138d181, {0xff, 0x90, 0xf0, 0x03, 0x00, 0x00}, {0x66, 0x0f, 0x1f, 0x44, 0x00, 0x00}},
+      {0x138d2f1, {0xff, 0x90, 0xf0, 0x03, 0x00, 0x00}, {0x66, 0x0f, 0x1f, 0x44, 0x00, 0x00}}}},
+    {"a guest gets the host's Insight for a boss, not the cooperator's 1",
+     {{0x13852b1, {0xff, 0x90, 0xf0, 0x03, 0x00, 0x00}, {0x66, 0x0f, 0x1f, 0x44, 0x00, 0x00}}}},
 };
 
 bool BellRules(std::uint8_t* image, std::size_t size) {
@@ -201,8 +231,10 @@ constexpr std::uint8_t kBossCountCallBytes[] = {0xe8, 0x94, 0xea, 0xdf, 0xff};
 constexpr std::size_t kDopingBranch = 0x138bcbf;
 constexpr std::uint8_t kDopingOriginal[] = {0x83, 0xf8, 0x02, 0x75, 0x32};
 constexpr std::uint8_t kDopingPatched[] = {0x83, 0xf8, 0x02, 0x7c, 0x32};
+constexpr std::size_t kSignCoopCap = 0x1871259;
+constexpr std::uint8_t kSignCoopCapOriginal[] = {0x41, 0xc7, 0x86, 0xfc, 0x01, 0x00, 0x00, 0x03, 0x00, 0x00, 0x00};
+constexpr std::uint8_t kSignCoopCapPatched[] = {0x41, 0xc7, 0x86, 0xfc, 0x01, 0x00, 0x00, 0x04, 0x00, 0x00, 0x00};
 constexpr int kCoopKinds[] = {7, 1, 0x15, 0x16, 0x17};
-constexpr int kMaxCooperators = 3;
 
 std::uint8_t* g_image = nullptr;
 thread_local bool g_in_summary = false;
@@ -219,10 +251,41 @@ std::int64_t __attribute__((sysv_abi)) OnSlotSummary(std::uint64_t, const std::u
         int cooperators = 0;
         for (const int kind : kCoopKinds)
             cooperators += static_cast<std::int32_t>(Call(reinterpret_cast<std::uint64_t>(g_image + kKindCount), selector, kind));
-        if (cooperators < kMaxCooperators) *reinterpret_cast<std::int32_t*>(out + 4) = 0;
+        if (BbParty::SlotOpen(cooperators)) *reinterpret_cast<std::int32_t*>(out + 4) = 0;
     }
     const_cast<std::uint64_t*>(saved)[-1] = static_cast<std::uint64_t>(result);
     return 1;
+}
+
+constexpr std::size_t kApplySpEffect = 0x18c6db0;
+constexpr std::uint8_t kApplySpEffectEntry[] = {0x55, 0x48, 0x89, 0xe5, 0x41, 0x57, 0x41, 0x56, 0x41,
+                                                0x55, 0x41, 0x54, 0x53, 0x48, 0x83, 0xec, 0x28};
+constexpr std::size_t kEventSpEffectReturn = 0x17bcaea;
+constexpr std::uint8_t kEventSpEffectCall[] = {0xff, 0x93, 0xf0, 0x03, 0x00, 0x00};
+constexpr std::size_t kSpEffectRowLookup = 0x1f28aa0;
+std::atomic<int> g_real_cooperators{0};
+thread_local bool g_in_apply = false;
+
+bool SpEffectRowPresent(int id) {
+    alignas(16) std::uint64_t out[2] = {};
+    Call(reinterpret_cast<std::uint64_t>(g_image + kSpEffectRowLookup), reinterpret_cast<std::uint64_t>(out),
+         static_cast<std::uint64_t>(id));
+    return out[1] != 0;
+}
+
+std::int64_t __attribute__((sysv_abi)) OnApplySpEffect(std::uint64_t, const std::uint64_t* saved) {
+    if (g_in_apply || saved[6] != reinterpret_cast<std::uint64_t>(g_image + kEventSpEffectReturn)) return 0;
+    if (static_cast<std::int32_t>(saved[1]) != 0 || static_cast<std::int32_t>(saved[4]) != BbParty::kDopingTwo) return 0;
+    const int cooperators = g_real_cooperators.load();
+    if (cooperators <= 2) return 0;
+    g_in_apply = true;
+    const bool rows = SpEffectRowPresent(BbParty::kDopingOne + 2) && SpEffectRowPresent(BbParty::kDopingMax);
+    g_in_apply = false;
+    const int row = BbParty::DopingRow(cooperators, rows);
+    Say("seamless: boss scaling: %d cooperators, row %d%s", cooperators, row,
+        rows ? "" : " (the game's 3 and 4 cooperator rows are missing: kept the 2 row)");
+    const_cast<std::uint64_t*>(saved)[4] = static_cast<std::uint64_t>(row);
+    return 0;
 }
 
 std::int64_t __attribute__((sysv_abi)) OnCoopCount(std::uint64_t, const std::uint64_t* saved) {
@@ -232,15 +295,17 @@ std::int64_t __attribute__((sysv_abi)) OnCoopCount(std::uint64_t, const std::uin
     const std::int64_t count = static_cast<std::int32_t>(
         Call(reinterpret_cast<std::uint64_t>(g_image + kCoopCount), saved[5], saved[4], saved[3]));
     g_in_coop_count = false;
-    const_cast<std::uint64_t*>(saved)[-1] = static_cast<std::uint64_t>(std::min<std::int64_t>(count, 2));
+    g_real_cooperators.store(static_cast<int>(count));
+    const_cast<std::uint64_t*>(saved)[-1] = static_cast<std::uint64_t>(BbParty::BossCount(count));
     return 1;
 }
 
-bool FourPlayers(std::uint8_t* image, std::size_t size) {
+bool FivePlayers(std::uint8_t* image, std::size_t size) {
     if (!Matches(image, size, kKindCount, kKindCountEntry, sizeof kKindCountEntry) ||
         !Matches(image, size, kBossCountCall, kBossCountCallBytes, sizeof kBossCountCallBytes) ||
-        !Matches(image, size, kDopingBranch, kDopingOriginal, sizeof kDopingOriginal)) {
-        Say("seamless: 4 players in one world left off: the game's code there is not 1.09's");
+        !Matches(image, size, kDopingBranch, kDopingOriginal, sizeof kDopingOriginal) ||
+        !Matches(image, size, kSignCoopCap, kSignCoopCapOriginal, sizeof kSignCoopCapOriginal)) {
+        Say("seamless: 5 players in one world left off: the game's code there is not 1.09's");
         return false;
     }
     g_image = image;
@@ -249,12 +314,22 @@ bool FourPlayers(std::uint8_t* image, std::size_t size) {
         !Prepare(hooks[1], image, size, kCoopCount, kCoopCountEntry, OnCoopCount)) {
         Discard(hooks[0]);
         Discard(hooks[1]);
-        Say("seamless: 4 players in one world left off: the game's code there is not 1.09's");
+        Say("seamless: 5 players in one world left off: the game's code there is not 1.09's");
         return false;
     }
     Commit(std::span(hooks, 2));
+    Hook scaling{};
+    if (Matches(image, size, kEventSpEffectReturn - sizeof kEventSpEffectCall, kEventSpEffectCall, sizeof kEventSpEffectCall) &&
+        Prepare(scaling, image, size, kApplySpEffect, kApplySpEffectEntry, OnApplySpEffect)) {
+        Commit(std::span(&scaling, 1));
+        Say("seamless: bosses scale with the game's own rows for 3 and 4 cooperators (2.5x and 3.0x health)");
+    } else {
+        Discard(scaling);
+        Say("seamless: boss scaling for 3 and 4 cooperators left off: the game's code there is not 1.09's");
+    }
     WriteCode(image + kDopingBranch, kDopingPatched, sizeof kDopingPatched);
-    Say("seamless: up to 4 players in one world (host and 3 cooperators); bosses scale as for 2 cooperators beyond 2");
+    WriteCode(image + kSignCoopCap, kSignCoopCapPatched, sizeof kSignCoopCapPatched);
+    Say("seamless: up to 5 players in one world (host and 4 cooperators); bosses scale as for 2 cooperators beyond 2");
     return true;
 }
 
@@ -448,6 +523,8 @@ constexpr std::uint8_t kSendItemAllEntry[] = {0x55, 0x48, 0x89, 0xe5, 0x41, 0x57
 constexpr std::uint64_t kItemPacket = 0x2c;
 constexpr std::uint32_t kDreamTalks = 21;
 std::atomic<bool> g_personal_world{false};
+std::atomic<bool> g_own_settled{false};
+constexpr int kInsightEffect = 4680;
 const Site kPersonalWorldSites[] = {
     {0x17d83d2, {0x0f, 0x85, 0x39, 0x01, 0x00, 0x00}, {0x90, 0xe9, 0x39, 0x01, 0x00, 0x00}},
     {0x17de8d2, {0x0f, 0x84, 0x5c, 0x02, 0x00, 0x00}, {0x66, 0x0f, 0x1f, 0x44, 0x00, 0x00}},
@@ -468,6 +545,7 @@ const Site kPersonalWorldSites[] = {
     {0x17d681f, {0x74, 0x09}, {0xeb, 0x1d}},
     {0x17dd191, {0x08, 0xc1}, {0x30, 0xc9}},
     {0x18d88ca, {0x74, 0x09}, {0xeb, 0x7e}},
+    {0x1937a97, {0xe8, 0x64, 0xdb, 0x18, 0x00}, {0x0f, 0x1f, 0x44, 0x00, 0x00}},
 };
 constexpr std::size_t kBlockParts = 0x15b09d0;
 constexpr std::uint8_t kBlockPartsEntry[] = {0x55, 0x48, 0x89, 0xe5, 0x41, 0x57, 0x41, 0x56, 0x41, 0x55,
@@ -1032,12 +1110,24 @@ void StandUpTick() {
     }
     const int role = Role();
     const bool party = role == kRoleHost || role == kRoleClient;
-    if (party && BossUp() && AnyoneElseUp()) {
+    const auto now = std::chrono::steady_clock::now();
+    if (party && !Loading() && (BossUp() || g_fight.Up(now))) {
+        PartyDeath::Situation s;
+        s.in_party = true;
+        s.boss_up = true;
+        s.wipe_called = g_wipe_at != std::chrono::steady_clock::time_point{} && now - g_wipe_at < kWipeFresh;
+        s.anyone_else_up = AnyoneElseUp();
+        s.all_down_held = g_all_down.Update(!s.anyone_else_up, now, role == kRoleHost ? kWipeAgree : kWipeWait);
+        if (PartyDeath::Decide(s) == PartyDeath::Move::PartyWipe) {
+            g_pending.on = false;
+            g_wipe_at = {};
+            PartyWipe(role == kRoleHost, now);
+            return;
+        }
         if (!g_pending.waited) Say("seamless: %s down in a boss fight: waiting for the boss to die or the party to fall", who);
         g_pending.waited = true;
         return;
     }
-    const auto now = std::chrono::steady_clock::now();
     float at[3], spot[3], facing[3];
     if (!g_pending.moved && Position(player, at) && SafeSpot(player, spot, facing) && std::isfinite(spot[1]) &&
         (!std::isfinite(at[1]) || at[1] < spot[1] - kFallDrop)) {
@@ -1050,7 +1140,7 @@ void StandUpTick() {
     }
     if (g_pending.moved && now - g_pending.moved_at < std::chrono::duration<double>(kFallSettle)) return;
     g_pending.on = false;
-    if (g_pending.waited) Say("seamless: %s gets up in the arena (%s)", who, BossUp() ? "the whole party fell" : "the boss is dead");
+    if (g_pending.waited) Say("seamless: %s gets up in the arena: the boss is dead", who);
     if (!ReviveHere(who)) Call(Fn(kDeathLoad));
 }
 
@@ -1495,11 +1585,11 @@ constexpr int kHostBellEffect = 9000, kGuestBellEffect = 9005;
 constexpr std::size_t kRemoveEffect = 0x17e1d90;
 constexpr std::uint8_t kRemoveEffectEntry[] = {0x55, 0x48, 0x89, 0xe5, 0x41, 0x57, 0x41, 0x56, 0x41, 0x55, 0x41, 0x54, 0x53, 0x50};
 
-void AddEffect(std::uint64_t chr, int id) {
+void AddEffect(std::uint64_t chr, int id, int mode = 1) {
     using AddFn = void(__attribute__((sysv_abi))*)(std::uint64_t, std::uint64_t, std::uint64_t, std::uint64_t, std::uint64_t,
                                                      std::uint64_t, std::uint64_t, float, float, float, float, float);
     const std::uint64_t fn = Field<std::uint64_t>(Field<std::uint64_t>(chr, 0), 0x3f0);
-    if (fn) reinterpret_cast<AddFn>(fn)(chr, std::uint64_t(id), chr, 0, 1, 0, 0, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f);
+    if (fn) reinterpret_cast<AddFn>(fn)(chr, std::uint64_t(id), chr, 0, std::uint64_t(mode), 0, 0, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f);
 }
 
 std::uint64_t EffectNode(std::uint64_t chr, int id) {
@@ -1831,6 +1921,25 @@ void NoteBossTrophy(std::uint64_t event, std::int32_t event_id) {
     g_boss_trophies_out.push_back(trophy);
 }
 
+void NoteBossInsight(std::uint64_t event) {
+    if (g_role.load(std::memory_order_relaxed) != kRoleHost) return;
+    const std::uint64_t instr = *reinterpret_cast<const std::uint64_t*>(event + 0xb0);
+    if (!instr || *reinterpret_cast<const std::int32_t*>(instr) != 2000 || *reinterpret_cast<const std::int32_t*>(instr + 4) != 0 ||
+        *reinterpret_cast<const std::uint64_t*>(instr + 8) < 12)
+        return;
+    std::uint64_t args = *reinterpret_cast<const std::uint64_t*>(event + 0xb8);
+    if (!args) {
+        const std::uint64_t script = *reinterpret_cast<const std::uint64_t*>(*reinterpret_cast<const std::uint64_t*>(event + 0xa8) + 8);
+        if (!script) return;
+        args = script + *reinterpret_cast<const std::uint64_t*>(script + 0x78) + *reinterpret_cast<const std::uint64_t*>(instr + 0x10);
+    }
+    const auto* words = reinterpret_cast<const std::int32_t*>(args);
+    const std::int32_t word = words[1] == BossRewards::kInsightEvent ? BossRewards::InsightWord(words[2]) : 0;
+    if (!word) return;
+    std::lock_guard lock(g_boss_lots_mu);
+    g_boss_lots_out.push_back(word);
+}
+
 bool OwnSaveHasFlag(std::uint32_t id);
 
 bool SkipSeenScene(std::uint64_t event, std::int32_t event_id) {
@@ -1853,6 +1962,7 @@ std::int64_t __attribute__((sysv_abi)) OnEmevdStep(std::uint64_t, const std::uin
     if (!event) return 0;
     const std::int32_t event_id = *reinterpret_cast<const std::int32_t*>(event + 0x28);
     NoteBossTrophy(event, event_id);
+    NoteBossInsight(event);
     if (const std::uint64_t step = *reinterpret_cast<const std::uint64_t*>(event + 0xb0);
         step && *reinterpret_cast<const std::int32_t*>(step) == 2003 && *reinterpret_cast<const std::int32_t*>(step + 4) == 49)
         g_warp_event.store(event_id, std::memory_order_relaxed);
@@ -2061,7 +2171,7 @@ bool DeathRules(std::uint8_t* image, std::size_t size) {
     for (const Site& site : kDeathSites) WriteCode(image + site.at, site.patched.begin(), site.patched.size());
     g_death_rules = true;
     if (!PartyDeathRules()) {
-        Say("seamless: deaths keep the party: a fallen hunter gets up on its last safe ground, nobody is sent home");
+        Say("seamless: deaths keep the party: a fallen hunter gets up on its last safe ground; in a boss fight it stays down until the boss dies, and the whole party down sends everyone back to the lamp");
         return true;
     }
     Say("seamless: deaths keep the party: outside a boss only the fallen hunter goes back to its lamp; in a boss fight the dead spectate until the boss dies or the whole party falls");
@@ -2134,7 +2244,18 @@ std::int64_t __attribute__((sysv_abi)) OnAwardLot(std::uint64_t, const std::uint
     const int role = g_role.load(std::memory_order_relaxed);
     if (saved[6] != Fn(kEventAwardCall + sizeof kEventAwardCallBytes) || lot <= 0) return 0;
     if (host_only) {
-        if (!BossRewards::IsBossLot(lot)) return 0;
+        if (!BossRewards::IsBossLot(lot)) {
+            if (role != kRoleClient || !g_personal_world.load(std::memory_order_relaxed)) return 0;
+            const std::uint32_t area = Field<std::uint32_t>(LocalPlayer(), kPlayerMap) >> 24;
+            if (area == kDungeonArea || area == kDreamArea) return 0;
+            if (!g_own_settled.load(std::memory_order_relaxed)) {
+                Say("seamless: item lot %d left as the game has it: this guest is still arriving, so its own flags are not settled", lot);
+                return 0;
+            }
+            const_cast<std::uint64_t*>(saved)[3] &= ~std::uint64_t(0xff);
+            Say("seamless: item lot %d given to this guest: an event of its own play in the host's world", lot);
+            return 0;
+        }
         if (role == kRoleHost) {
             std::lock_guard lock(g_boss_lots_mu);
             g_boss_lots_out.push_back(lot);
@@ -2353,11 +2474,13 @@ bool Install(std::uint8_t* image, std::size_t size) {
     const char* online = std::getenv("BB_ONLINE");
     if (!online || std::strcmp(online, "1") != 0) return false;
     bool any = FixCharacterId(image, size);
+    if (const char* backend = std::getenv("BB_NET_BACKEND"); backend && std::strcmp(backend, "thd") == 0)
+        any = MatchingWorldwide(image, size) || any;
     if (const char* backend = std::getenv("BB_NET_BACKEND"); backend && std::strcmp(backend, "room") == 0) {
         g_image = image;
         any = BellRules(image, size) || any;
         BellTrace(image, size);
-        any = FourPlayers(image, size) || any;
+        any = FivePlayers(image, size) || any;
         any = DeathRules(image, size) || any;
         any = LampTravel(image, size) || any;
         any = PersonalWorld(image, size) || any;
@@ -2490,7 +2613,8 @@ void BossDropsTick(int role) {
             if (!present.count(v.name)) continue;
             for (const std::int32_t lot : out) {
                 BbRoom::SendBossLot(lot, v.slot);
-                Say("seamless: boss drop %d sent to %s", lot, v.name.c_str());
+                if (const std::int32_t insight = BossRewards::InsightOf(lot)) Say("seamless: %d Insight the host's world gave sent to %s", insight, v.name.c_str());
+                else Say("seamless: boss drop %d sent to %s", lot, v.name.c_str());
             }
             for (const std::int32_t trophy : trophies) {
                 BbRoom::SendBossTrophy(trophy, v.slot);
@@ -2520,6 +2644,11 @@ void BossDropsTick(int role) {
     if ((PromptsOff() || Hp(LocalPlayer()) <= 0) && now - drop_since < kDropWaitMax) return;
     drop_since = {};
     for (const std::int32_t lot : waiting) {
+        if (const std::int32_t insight = BossRewards::InsightOf(lot); insight) {
+            for (std::int32_t i = 0; i < insight; ++i) AddEffect(LocalPlayer(), kInsightEffect, 0);
+            Say("seamless: %d Insight given to this guest: what the host's world gave while it was there", insight);
+            continue;
+        }
         if (!BossRewards::IsBossLot(lot)) continue;
         bool first = false;
         {
@@ -2707,6 +2836,7 @@ WorldCopy::Group OwnBits(std::uint32_t group, const WorldCopy::Group& shared) {
     }
     for (const FlagRange& r : kProgressFlags)
         if (r.kind != kKeepSet && r.kind != kDungeonFlag) WorldCopy::Add(own, WorldCopy::RangeBits(group, r.first, r.last));
+    WorldCopy::Add(own, WorldCopy::RangeBits(group, WorldCopy::kGiftFirst, WorldCopy::kGiftLast));
     for (std::size_t i = 0; i < own.size(); ++i) own[i] &= shared[i];
     return own;
 }
@@ -2839,6 +2969,7 @@ void OwnFlagsTick(const std::map<std::uint32_t, const SharedGroup*>& by_group, s
             }
         copied = true;
         settled = false;
+        g_own_settled.store(false, std::memory_order_relaxed);
         own_head = head;
         own_first = first;
         noted = copied_at = std::chrono::steady_clock::now();
@@ -2846,6 +2977,7 @@ void OwnFlagsTick(const std::map<std::uint32_t, const SharedGroup*>& by_group, s
     };
     if (Loading()) {
         copied = false;
+        g_own_settled.store(false, std::memory_order_relaxed);
         return;
     }
     if (!copied || head != own_head || first != own_first) {
@@ -2867,6 +2999,7 @@ void OwnFlagsTick(const std::map<std::uint32_t, const SharedGroup*>& by_group, s
             baseline[group] = is;
         }
         if (scripts) Say("seamless: the map's scripts changed %d byte(s) of NPC flags on arriving: they stay out of this hunter's save", scripts);
+        g_own_settled.store(true, std::memory_order_relaxed);
     }
     int differ = 0;
     std::vector<std::pair<const SharedGroup*, WorldCopy::Group>> changed;
@@ -2893,6 +3026,53 @@ void OwnFlagsTick(const std::map<std::uint32_t, const SharedGroup*>& by_group, s
     }
     Say("seamless: %d byte(s) of this hunter's own loot and NPC steps kept in its save", differ);
     RequestSave();
+}
+
+void WitnessTick(const std::map<std::uint32_t, const SharedGroup*>& by_group, std::uint64_t man, std::uint64_t head, int role, bool have_host) {
+    static WorldCopy::Witness witness;
+    static std::map<std::uint32_t, WorldCopy::Group> kept;
+    static std::uint64_t seen_head = 0;
+    static std::chrono::steady_clock::time_point noted;
+    const std::uint64_t pool = Field<std::uint64_t>(man, 0x28);
+    if (role != kRoleClient || !have_host || !pool || Field<std::uint32_t>(man, 0x20) != kFlagStride || Loading() ||
+        !g_own_settled.load(std::memory_order_relaxed) || head != seen_head) {
+        seen_head = head;
+        witness.Forget();
+        return;
+    }
+    const auto now = std::chrono::steady_clock::now();
+    if (now - noted < kProgressScan) return;
+    noted = now;
+    if (kept.empty())
+        for (const auto& [group, g] : by_group) {
+            WorldCopy::Group bits{};
+            for (const FlagRange& r : kProgressFlags)
+                if (r.kind == kKeepSet) WorldCopy::Add(bits, WorldCopy::RangeBits(group, r.first, r.last));
+            for (std::size_t i = 0; i < bits.size(); ++i) bits[i] &= g->mask[i];
+            if (!WorldCopy::IsZero(bits)) kept[group] = bits;
+        }
+    WorldCopy::Image is;
+    for (const auto& [group, bits] : kept)
+        if (const std::uint8_t* at = OverlayBuffer(head, by_group.at(group)->key)) is[group] = WorldCopy::Masked(at, bits);
+    if (!witness.Ready()) {
+        witness.Start(is);
+        return;
+    }
+    bool rebuilt = false;
+    const WorldCopy::Image fresh = witness.Step(is, kept, rebuilt);
+    if (rebuilt) {
+        Say("seamless: many progress flags turned on at once in the copy of the host's world: taken as the host's image arriving, none go to this hunter's save");
+        return;
+    }
+    int bits = 0, written = 0;
+    for (const auto& [group, on] : fresh) {
+        bits += WorldCopy::CountBits(on);
+        written += WorldCopy::SetBits(reinterpret_cast<std::uint8_t*>(pool + std::uint64_t(by_group.at(group)->key) * kFlagStride), on);
+    }
+    if (!bits) return;
+    Say("seamless: %d progress flag(s) turned on in the host's world with this hunter there (doors, shortcuts, lamps, bosses, story): %s", bits,
+        written ? "kept in its own save" : "its own save already had them");
+    if (written) RequestSave();
 }
 
 void OwnClearCountTick(int role) {
@@ -2979,6 +3159,7 @@ void WorldGuestTick(int role) {
     }
     if (role != kRoleClient && phase != kPhaseSummoned && Field<std::int32_t>(man, 0x80, -1) != 1) return;
     OwnFlagsTick(by_group, man, head, first, role);
+    WitnessTick(by_group, man, head, role, receiver.Have() && applied_head == head);
     if (!receiver.Have()) return;
     int groups = 0, bytes = 0;
     if (new_overlay) {
@@ -3494,9 +3675,9 @@ void SummonTick(int role) {
     }
     if (!g_summon.load()) return;
     if (BbRoom::IsHost()) {
-        if (InWorld().size() >= 3) {
+        if (BbParty::Full(InWorld().size())) {
             g_summon = false;
-            Say("seamless: the party is full (4 hunters): summoning stopped");
+            Say("seamless: the party is full (5 hunters): summoning stopped");
             return;
         }
         if (role != kRoleClient && Settled(settled, now, kPanelSettle) && now - rang >= kPanelRingEvery) {
