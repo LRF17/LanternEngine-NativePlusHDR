@@ -14,8 +14,8 @@ import urllib.request
 from zipfile import ZipFile
 
 BASE_URL = ('https://github.com/Awakenchan/LanternEngine/releases/download/'
-            'v0.9.42/LanternEngine-v0.9.42-win64.zip')
-BASE_SHA = '25854036176c94bba326af81302eb3f3e50684241998c263d764c68daa255669'
+            'v0.9.43/LanternEngine-v0.9.43-win64.zip')
+BASE_SHA = '8d23c3ff3e43bd0778695313964ab06d59ca38b40a4c2613d56f329f631bb309'
 
 
 def archive(url, digest, cache):
@@ -69,9 +69,9 @@ def assemble(engine, overlay, destination, cache):
     version = os.environ.get('BB_RELEASE_VERSION') or (Path(__file__).with_name('VERSION')
                                                         .read_text(encoding='utf-8').strip())
     (destination / 'package.json').write_text(json.dumps({
-        'version': version, 'engine': 'lantern-fps95-nativeplus-v10',
+        'version': version, 'engine': 'lantern-fps95-nativeplus-v11',
         'source': 'https://github.com/LRF17/LanternEngine-NativePlusHDR/tree/lantern-Native+HDR',
-        'runtime_resources': 'v0.9.42',
+        'runtime_resources': 'v0.9.43',
     }, indent=2), encoding='utf-8')
     # Explicit shipped HDR defaults in the shipped settings (engine\lantern.default.ini, which the
     # launcher copies to lantern.ini when a folder has neither it nor an older bbport.ini), so no

@@ -1,8 +1,8 @@
 diff --git a/launcher/windows/BloodborneLauncher/Core/Choices.cs b/launcher/windows/BloodborneLauncher/Core/Choices.cs
-index 07ee94b..0e78647 100644
+index bb40ac9..a0cad06 100644
 --- a/launcher/windows/BloodborneLauncher/Core/Choices.cs
 +++ b/launcher/windows/BloodborneLauncher/Core/Choices.cs
-@@ -257,7 +257,7 @@
+@@ -263,7 +263,7 @@
  
          public static readonly Choice[] HdrPaperWhite =
          {
@@ -11,7 +11,7 @@ index 07ee94b..0e78647 100644
              new(L.T("250 nits"), "250"), new(L.T("300 nits"), "300"), new(L.T("400 nits"), "400"),
          };
  
-@@ -286,19 +286,28 @@
+@@ -292,19 +292,28 @@
  
          public static readonly Choice[] HdrMode =
          {
@@ -46,10 +46,10 @@ index 07ee94b..0e78647 100644
          {
              new(L.T("Exact (sRGB)"), "0"), new(L.T("In between"), "0.5"), new(L.T("Vivid (default)"), "1"),
 diff --git a/launcher/windows/BloodborneLauncher/Core/GameEnvironment.cs b/launcher/windows/BloodborneLauncher/Core/GameEnvironment.cs
-index 5e3b949..ff55b31 100644
+index 65942b2..fe6a797 100644
 --- a/launcher/windows/BloodborneLauncher/Core/GameEnvironment.cs
 +++ b/launcher/windows/BloodborneLauncher/Core/GameEnvironment.cs
-@@ -270,6 +270,10 @@ namespace BloodborneLauncher.Core
+@@ -307,6 +307,10 @@ namespace BloodborneLauncher.Core
          /// <summary>SDL3 hints for controllers, given to the game and used by the launcher's own SDL (SdlPad).</summary>
          public static IEnumerable<(string Key, string Value)> SdlHints()
          {
@@ -61,10 +61,10 @@ index 5e3b949..ff55b31 100644
              yield return ("SDL_JOYSTICK_HIDAPI_PS3_SIXAXIS_DRIVER", "1");
              var mappings = Path.Combine(Paths.EngineDir, "gamecontrollerdb.txt");
 diff --git a/launcher/windows/BloodborneLauncher/Core/GameRunner.cs b/launcher/windows/BloodborneLauncher/Core/GameRunner.cs
-index 252f6a7..d55b882 100644
+index a0e9877..32a57c1 100644
 --- a/launcher/windows/BloodborneLauncher/Core/GameRunner.cs
 +++ b/launcher/windows/BloodborneLauncher/Core/GameRunner.cs
-@@ -103,6 +103,8 @@ namespace BloodborneLauncher.Core
+@@ -105,6 +105,8 @@ namespace BloodborneLauncher.Core
              // code pages cannot write.
              info.Environment["PYTHONUTF8"] = "1";
              info.Environment["PYTHONIOENCODING"] = "utf-8";
@@ -73,7 +73,7 @@ index 252f6a7..d55b882 100644
              info.UseShellExecute = false;
              info.CreateNoWindow = true;
              info.RedirectStandardOutput = true;
-@@ -115,7 +117,8 @@ namespace BloodborneLauncher.Core
+@@ -117,7 +119,8 @@ namespace BloodborneLauncher.Core
                  var process = new Process { StartInfo = info, EnableRaisingEvents = true };
                  OpenLog();
                  // The first line of every log, the Output page's export included: which build ran.
@@ -111,10 +111,10 @@ index 0000000..edf7570
 +    }
 +}
 diff --git a/launcher/windows/BloodborneLauncher/Core/LauncherSettings.cs b/launcher/windows/BloodborneLauncher/Core/LauncherSettings.cs
-index b4e13fc..9850aeb 100644
+index 383d356..d2259d1 100644
 --- a/launcher/windows/BloodborneLauncher/Core/LauncherSettings.cs
 +++ b/launcher/windows/BloodborneLauncher/Core/LauncherSettings.cs
-@@ -49,7 +49,7 @@ namespace BloodborneLauncher.Core
+@@ -47,7 +47,7 @@ namespace BloodborneLauncher.Core
              ["custom_command"] = "",
              ["custom_args"] = "",
              ["switch_to_output"] = true,
@@ -185,8 +185,83 @@ index 9221006..f5ec50c 100644
  
          public static readonly string ConfigFile = Path.Combine(ConfigDir, "settings.json");
  
+diff --git a/launcher/windows/BloodborneLauncher/Core/SuperMedo.cs b/launcher/windows/BloodborneLauncher/Core/SuperMedo.cs
+deleted file mode 100644
+index 19d08a4..0000000
+--- a/launcher/windows/BloodborneLauncher/Core/SuperMedo.cs
++++ /dev/null
+@@ -1,69 +0,0 @@
+-using System.Net.Http;
+-using System.Net.Sockets;
+-
+-namespace BloodborneLauncher.Core
+-{
+-    public static class SuperMedo
+-    {
+-        public const string Id = "supermedo";
+-        public const string Host = "game.supermedo.com";
+-        public const int Port = 31313;
+-        public const string WebApi = "http://game.supermedo.com:31315/";
+-        public const string GameApi = "https://game.supermedo.com/";
+-        public const string Register = "https://game.supermedo.com/account/register";
+-
+-        public static bool Selected(IniFile ini) => ini.Get("online_server") == Id;
+-
+-        public static void Apply(IniFile ini, LauncherSettings s)
+-        {
+-            var selected = Selected(ini);
+-            Set(ini, "online_host", selected ? Host : "");
+-            Set(ini, "online_port", selected ? Port.ToString() : "");
+-            Set(ini, "online_webapi", selected ? WebApi : "");
+-            Set(ini, "online_game_api", selected ? GameApi : "");
+-            Set(ini, "online_thd_account", "");
+-            Set(ini, "online_pool", !selected && s.HuntersDreamToken.Length > 0 && s.Str("hd_name").Length > 0 ? "huntersdream" : "");
+-        }
+-
+-        public static string? Problem(IniFile ini, LauncherSettings s) =>
+-            ini.Get("online_username").Contains('@') ? L.T("The account name is the name registered on the server, not an email address.")
+-            : ini.Get("online_username").Trim().Length == 0 ? L.T("Enter your SuperMedo account name on the Online page first.")
+-            : s.OnlinePassword.Length == 0 ? L.T("Enter your SuperMedo account password on the Online page first.")
+-            : null;
+-
+-        public static async Task<List<Online.Result>> CheckAsync()
+-        {
+-            var results = new List<Online.Result>();
+-            try
+-            {
+-                using var tcp = new TcpClient();
+-                using var cancel = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+-                await tcp.ConnectAsync(Host, Port, cancel.Token);
+-                results.Add(new Online.Result(L.T("Co-op server"), $"{Host}:{Port}", true, ""));
+-            }
+-            catch (Exception e)
+-            {
+-                results.Add(new Online.Result(L.T("Co-op server"), $"{Host}:{Port}", false, e.GetBaseException().Message));
+-            }
+-            foreach (var (name, url) in new[] { (L.T("Web API"), WebApi), (L.T("Game server"), GameApi) })
+-            {
+-                try
+-                {
+-                    using var http = new HttpClient { Timeout = TimeSpan.FromSeconds(7) };
+-                    using var response = await http.GetAsync(url);
+-                    results.Add(new Online.Result(name, url, true, $"HTTP {(int)response.StatusCode}"));
+-                }
+-                catch (Exception e)
+-                {
+-                    results.Add(new Online.Result(name, url, false, e.GetBaseException().Message));
+-                }
+-            }
+-            return results;
+-        }
+-
+-        private static void Set(IniFile ini, string key, string value)
+-        {
+-            if (ini.Get(key) != value) ini.Set(key, value);
+-        }
+-    }
+-}
 diff --git a/launcher/windows/BloodborneLauncher/Core/Updater.cs b/launcher/windows/BloodborneLauncher/Core/Updater.cs
-index ccf0cd9..74f2627 100644
+index f7aef52..0cb3054 100644
 --- a/launcher/windows/BloodborneLauncher/Core/Updater.cs
 +++ b/launcher/windows/BloodborneLauncher/Core/Updater.cs
 @@ -23,11 +23,12 @@ namespace BloodborneLauncher.Core
@@ -198,10 +273,10 @@ index ccf0cd9..74f2627 100644
          public static string ReleasesPage => $"https://github.com/{Repository}/releases";
  
 -        /// <summary>The engine build this launcher is made for (package.json "engine").</summary>
--        public const string EngineId = "lantern-room17-0942";
+-        public const string EngineId = "lantern-room17-0943";
 +        /// <summary>The engine build this launcher is made for (package.json "engine"). A release whose
 +        /// engine changed needs a new one: with the same, the updater replaces the launcher alone.</summary>
-+        public const string EngineId = "lantern-fps95-nativeplus-v10";
++        public const string EngineId = "lantern-fps95-nativeplus-v11";
  
          public const string ExeName = "Lantern Engine.exe";
          /// <summary>The launcher's name before 0.9.34 beta 8 (now a forwarder to ExeName).</summary>
@@ -271,7 +346,7 @@ index ccf0cd9..74f2627 100644
  
          private static readonly string[] OldEngineFolders = { "scripts", "tools", "fsr4_shaders" };
 diff --git a/launcher/windows/BloodborneLauncher/Localization/de.json b/launcher/windows/BloodborneLauncher/Localization/de.json
-index d8b4a96..49f1052 100644
+index ecb95bb..db68b8d 100644
 --- a/launcher/windows/BloodborneLauncher/Localization/de.json
 +++ b/launcher/windows/BloodborneLauncher/Localization/de.json
 @@ -756,6 +756,7 @@
@@ -283,7 +358,7 @@ index d8b4a96..49f1052 100644
    "Camera tuning": "Kameraanpassung",
    "Turns the three settings below on": "Schaltet die drei Einstellungen unten ein",
 diff --git a/launcher/windows/BloodborneLauncher/Localization/es.json b/launcher/windows/BloodborneLauncher/Localization/es.json
-index e095a03..288d583 100644
+index ae77581..96e66aa 100644
 --- a/launcher/windows/BloodborneLauncher/Localization/es.json
 +++ b/launcher/windows/BloodborneLauncher/Localization/es.json
 @@ -756,6 +756,7 @@
@@ -295,7 +370,7 @@ index e095a03..288d583 100644
    "Camera tuning": "Ajuste de cámara",
    "Turns the three settings below on": "Activa los tres ajustes de abajo",
 diff --git a/launcher/windows/BloodborneLauncher/Localization/fr.json b/launcher/windows/BloodborneLauncher/Localization/fr.json
-index 921d053..e33d29b 100644
+index 6e4efe9..cdc5e69 100644
 --- a/launcher/windows/BloodborneLauncher/Localization/fr.json
 +++ b/launcher/windows/BloodborneLauncher/Localization/fr.json
 @@ -756,6 +756,7 @@
@@ -307,7 +382,7 @@ index 921d053..e33d29b 100644
    "Camera tuning": "Réglage de la caméra",
    "Turns the three settings below on": "Active les trois réglages ci-dessous",
 diff --git a/launcher/windows/BloodborneLauncher/Localization/it.json b/launcher/windows/BloodborneLauncher/Localization/it.json
-index 44e2fe4..74e70ab 100644
+index ab9f4b5..19723af 100644
 --- a/launcher/windows/BloodborneLauncher/Localization/it.json
 +++ b/launcher/windows/BloodborneLauncher/Localization/it.json
 @@ -756,6 +756,7 @@
@@ -319,7 +394,7 @@ index 44e2fe4..74e70ab 100644
    "Camera tuning": "Regolazione della telecamera",
    "Turns the three settings below on": "Attiva le tre impostazioni qui sotto",
 diff --git a/launcher/windows/BloodborneLauncher/Localization/ja.json b/launcher/windows/BloodborneLauncher/Localization/ja.json
-index 7dac9fd..fb0e768 100644
+index acd8dc5..f3cf986 100644
 --- a/launcher/windows/BloodborneLauncher/Localization/ja.json
 +++ b/launcher/windows/BloodborneLauncher/Localization/ja.json
 @@ -756,6 +756,7 @@
@@ -331,7 +406,7 @@ index 7dac9fd..fb0e768 100644
    "Camera tuning": "カメラの調整",
    "Turns the three settings below on": "以下の 3 つの設定を有効にします",
 diff --git a/launcher/windows/BloodborneLauncher/Localization/ko.json b/launcher/windows/BloodborneLauncher/Localization/ko.json
-index 6a0376b..7b09e15 100644
+index 24fb982..6d26032 100644
 --- a/launcher/windows/BloodborneLauncher/Localization/ko.json
 +++ b/launcher/windows/BloodborneLauncher/Localization/ko.json
 @@ -756,6 +756,7 @@
@@ -343,7 +418,7 @@ index 6a0376b..7b09e15 100644
    "Camera tuning": "카메라 조정",
    "Turns the three settings below on": "아래 세 가지 설정을 켭니다",
 diff --git a/launcher/windows/BloodborneLauncher/Localization/pl.json b/launcher/windows/BloodborneLauncher/Localization/pl.json
-index 35c86f6..fc11acc 100644
+index 65591e1..eb5ac99 100644
 --- a/launcher/windows/BloodborneLauncher/Localization/pl.json
 +++ b/launcher/windows/BloodborneLauncher/Localization/pl.json
 @@ -756,6 +756,7 @@
@@ -355,7 +430,7 @@ index 35c86f6..fc11acc 100644
    "Camera tuning": "Strojenie kamery",
    "Turns the three settings below on": "Włącza trzy poniższe ustawienia",
 diff --git a/launcher/windows/BloodborneLauncher/Localization/pt-BR.json b/launcher/windows/BloodborneLauncher/Localization/pt-BR.json
-index bb5f03e..52222f9 100644
+index 729215a..5941457 100644
 --- a/launcher/windows/BloodborneLauncher/Localization/pt-BR.json
 +++ b/launcher/windows/BloodborneLauncher/Localization/pt-BR.json
 @@ -756,6 +756,7 @@
@@ -367,7 +442,7 @@ index bb5f03e..52222f9 100644
    "Camera tuning": "Ajuste de câmera",
    "Turns the three settings below on": "Ativa as três configurações abaixo",
 diff --git a/launcher/windows/BloodborneLauncher/Localization/ru.json b/launcher/windows/BloodborneLauncher/Localization/ru.json
-index acef727..5a7c921 100644
+index ccca6b2..61ede0d 100644
 --- a/launcher/windows/BloodborneLauncher/Localization/ru.json
 +++ b/launcher/windows/BloodborneLauncher/Localization/ru.json
 @@ -756,6 +756,7 @@
@@ -379,7 +454,7 @@ index acef727..5a7c921 100644
    "Camera tuning": "Настройка камеры",
    "Turns the three settings below on": "Включает три настройки ниже",
 diff --git a/launcher/windows/BloodborneLauncher/Localization/tr.json b/launcher/windows/BloodborneLauncher/Localization/tr.json
-index ae6ead8..00ace6f 100644
+index 3ec171e..573be98 100644
 --- a/launcher/windows/BloodborneLauncher/Localization/tr.json
 +++ b/launcher/windows/BloodborneLauncher/Localization/tr.json
 @@ -756,6 +756,7 @@
@@ -391,7 +466,7 @@ index ae6ead8..00ace6f 100644
    "Camera tuning": "Kamera ayarı",
    "Turns the three settings below on": "Aşağıdaki üç ayarı açar",
 diff --git a/launcher/windows/BloodborneLauncher/Localization/uk.json b/launcher/windows/BloodborneLauncher/Localization/uk.json
-index 933642f..7330a42 100644
+index 5bb71d7..f57a1ea 100644
 --- a/launcher/windows/BloodborneLauncher/Localization/uk.json
 +++ b/launcher/windows/BloodborneLauncher/Localization/uk.json
 @@ -756,6 +756,7 @@
@@ -403,7 +478,7 @@ index 933642f..7330a42 100644
    "Camera tuning": "Налаштування камери",
    "Turns the three settings below on": "Вмикає три налаштування нижче",
 diff --git a/launcher/windows/BloodborneLauncher/Localization/zh-CN.json b/launcher/windows/BloodborneLauncher/Localization/zh-CN.json
-index c6ab4b7..0428509 100644
+index 37d7367..2b54300 100644
 --- a/launcher/windows/BloodborneLauncher/Localization/zh-CN.json
 +++ b/launcher/windows/BloodborneLauncher/Localization/zh-CN.json
 @@ -756,6 +756,7 @@
@@ -415,7 +490,7 @@ index c6ab4b7..0428509 100644
    "Camera tuning": "镜头调校",
    "Turns the three settings below on": "启用下方三项设置",
 diff --git a/launcher/windows/BloodborneLauncher/Localization/zh-TW.json b/launcher/windows/BloodborneLauncher/Localization/zh-TW.json
-index fa249e3..04e8043 100644
+index 2ab3769..9af6632 100644
 --- a/launcher/windows/BloodborneLauncher/Localization/zh-TW.json
 +++ b/launcher/windows/BloodborneLauncher/Localization/zh-TW.json
 @@ -756,6 +756,7 @@
@@ -562,11 +637,11 @@ index fd86212..de0bcce 100644
              Group(L.T("Language"));
              ComboRow(SymbolRegular.LocalLanguage24, L.T("In-game menu language"), L.T("The port's settings menu (Insert or L3 + R3)"),
 diff --git a/launcher/windows/BloodborneLauncher/Views/GraphicsPage.cs b/launcher/windows/BloodborneLauncher/Views/GraphicsPage.cs
-index 34ca433..935a4b4 100644
+index e1fbf9e..cba80f5 100644
 --- a/launcher/windows/BloodborneLauncher/Views/GraphicsPage.cs
 +++ b/launcher/windows/BloodborneLauncher/Views/GraphicsPage.cs
-@@ -13,6 +13,11 @@ namespace BloodborneLauncher.Views
-         private TextBlock? _motionBlurHint;
+@@ -14,6 +14,11 @@ namespace BloodborneLauncher.Views
+         private readonly SettingRow _glowSizeCard;
          private readonly SettingRow _presetCard, _renderScaleCard, _sharpenCard, _sharpnessCard, _mipBiasCard;
          private readonly SettingRow _frameGenFramesCard, _frameGenDynamicCard, _reflexCard, _frameGenCapCard;
 +        /// <summary>Picture's Bloom, Saturation, Brightness and Contrast: the Native+ chain grades them while
@@ -577,7 +652,7 @@ index 34ca433..935a4b4 100644
  
          public GraphicsPage() : base(L.T("Graphics"),
              L.T("Stored in lantern.ini; the upscaler can also be changed in game (Insert or L3 + R3)."))
-@@ -89,13 +94,20 @@ namespace BloodborneLauncher.Views
+@@ -90,13 +95,20 @@ namespace BloodborneLauncher.Views
              IniToggle(SymbolRegular.CircleHalfFill24, L.T("Vignette"), null, "graphics_vignette", picture);
              IniSlider(SymbolRegular.DarkTheme24, L.T("Ambient occlusion strength"), 0, 3, "graphics_ao_strength", picture);
              IniSlider(SymbolRegular.WeatherSunny24, L.T("Shadow distance"), 0.5, 4, "graphics_shadow_scale", picture);
@@ -591,7 +666,7 @@ index 34ca433..935a4b4 100644
 +            GradedSlider(SymbolRegular.BrightnessHigh24, L.T("Brightness"), 0, 3, "graphics_brightness", picture);
 +            GradedSlider(SymbolRegular.DarkTheme24, L.T("Contrast"), 0.8, 1.2, "graphics_contrast", picture, step: 0.01);
              IniSlider(SymbolRegular.Color24, L.T("Hue"), -180, 180, "graphics_hue", picture, step: 1, fallback: 0);
-             IniSlider(SymbolRegular.WeatherFog24, L.T("Fog"), 0, 3, "graphics_fog", picture);
+             IniSlider(SymbolRegular.WeatherFog24, L.T("Fog"), 0, 3, "graphics_fog", picture, snapToOne: true);
              Body.Children.Add(picture);
 +            // Where they went, while they are hidden: the in-game menu's grading, which is live there.
 +            // The menu's own labels are English and Exposure only shows from Settings Mode Intermediate,
@@ -602,9 +677,9 @@ index 34ca433..935a4b4 100644
  
              Group(L.T("Menus"));
              _ui4k = ToggleRow(SymbolRegular.ZoomIn24, L.T("4K menus"),
-@@ -230,6 +242,15 @@ namespace BloodborneLauncher.Views
-             double step = 0.05, double fallback = 1.0) =>
-             SliderRow(icon, title, null, min, max, step, () => ParseDouble(Ini.Get(key, Fmt(fallback)), fallback), v => Ini.Set(key, Fmt(v)), into: into);
+@@ -238,6 +250,15 @@ namespace BloodborneLauncher.Views
+             double step = 0.05, double fallback = 1.0, bool snapToOne = false) =>
+             SliderRow(icon, title, null, min, max, step, () => ParseDouble(Ini.Get(key, Fmt(fallback)), fallback), v => Ini.Set(key, Fmt(snapToOne ? Looks.SnapToOne(v) : v)), into: into);
  
 +        /// <summary>A Picture slider the Native+ chain replaces while it grades (hdr_grading): kept in
 +        /// _pictureGradedRows, so UpdatePicture hides it and the note says where it is.</summary>
@@ -618,7 +693,7 @@ index 34ca433..935a4b4 100644
          /// <summary>An RTX 40 or 50 card (desktop or laptop): the GPUs NVIDIA's frame generation runs on.</summary>
          private static bool DlssFrameGenGpu() =>
              Hardware.Detect() is { Rtx: true } hardware &&
-@@ -247,7 +268,28 @@ namespace BloodborneLauncher.Views
+@@ -255,7 +276,28 @@ namespace BloodborneLauncher.Views
              _ => SymbolRegular.Color24,
          };
  
@@ -646,8 +721,8 @@ index 34ca433..935a4b4 100644
 +                _pictureGradedNote.Visibility = noteShown;
 +        }
  
-         private static bool DlssFound() =>
-             Paths.DlssRuntime != null; // the engine has DLSS built in; NVIDIA's runtime sits beside it
+         private void UpdateGlowSize() => _glowSizeCard.IsEnabled = Ini.Get("graphics_point_fog_falloff", "0") == "1";
+ 
 diff --git a/launcher/windows/BloodborneLauncher/Views/LauncherPage.cs b/launcher/windows/BloodborneLauncher/Views/LauncherPage.cs
 index 89d445b..c0005db 100644
 --- a/launcher/windows/BloodborneLauncher/Views/LauncherPage.cs
@@ -664,7 +739,7 @@ index 89d445b..c0005db 100644
  
      /// <summary>
 diff --git a/launcher/windows/LanternLauncher/MainWindow.cs b/launcher/windows/LanternLauncher/MainWindow.cs
-index ce05f10..a7c157c 100644
+index b0c0915..822dc31 100644
 --- a/launcher/windows/LanternLauncher/MainWindow.cs
 +++ b/launcher/windows/LanternLauncher/MainWindow.cs
 @@ -78,7 +78,7 @@ namespace BloodborneLauncher
@@ -795,11 +870,11 @@ index 2345dd2..2c18f1e 100644
              Group(L.T("Language"));
              ComboRow(SymbolRegular.LocalLanguage24, L.T("In-game menu language"), L.T("The port's settings menu (Insert or L3 + R3)"),
 diff --git a/launcher/windows/LanternLauncher/Views/GraphicsPage.cs b/launcher/windows/LanternLauncher/Views/GraphicsPage.cs
-index 2a4219a..ea2af8c 100644
+index 8595203..1c82c4d 100644
 --- a/launcher/windows/LanternLauncher/Views/GraphicsPage.cs
 +++ b/launcher/windows/LanternLauncher/Views/GraphicsPage.cs
-@@ -11,6 +11,11 @@ namespace BloodborneLauncher.Views
-         private TextBlock? _motionBlurHint;
+@@ -12,6 +12,11 @@ namespace BloodborneLauncher.Views
+         private readonly SettingRow _glowSizeCard;
          private readonly SettingRow _presetCard, _renderScaleCard, _sharpenCard, _sharpnessCard, _mipBiasCard;
          private readonly SettingRow _frameGenFramesCard, _frameGenDynamicCard, _reflexCard, _frameGenCapCard;
 +        /// <summary>Picture's Bloom, Saturation, Brightness and Contrast: the Native+ chain grades them while
@@ -810,7 +885,7 @@ index 2a4219a..ea2af8c 100644
  
          public GraphicsPage() : base(L.T("Graphics"),
              L.T("Stored in lantern.ini; the upscaler can also be changed in game (Insert or L3 + R3)."))
-@@ -90,13 +95,18 @@ namespace BloodborneLauncher.Views
+@@ -91,13 +96,18 @@ namespace BloodborneLauncher.Views
              IniToggle(SymbolRegular.CircleHalfFill24, L.T("Vignette"), null, "graphics_vignette", picture);
              IniSlider(SymbolRegular.DarkTheme24, L.T("Ambient occlusion strength"), 0, 3, "graphics_ao_strength", picture);
              IniSlider(SymbolRegular.WeatherSunny24, L.T("Shadow distance"), 0.5, 4, "graphics_shadow_scale", picture);
@@ -824,7 +899,7 @@ index 2a4219a..ea2af8c 100644
 +            GradedSlider(SymbolRegular.BrightnessHigh24, L.T("Brightness"), 0, 3, "graphics_brightness", picture);
 +            GradedSlider(SymbolRegular.DarkTheme24, L.T("Contrast"), 0.8, 1.2, "graphics_contrast", picture, step: 0.01);
              IniSlider(SymbolRegular.Color24, L.T("Hue"), -180, 180, "graphics_hue", picture, step: 1, fallback: 0);
-             IniSlider(SymbolRegular.WeatherFog24, L.T("Fog"), 0, 3, "graphics_fog", picture);
+             IniSlider(SymbolRegular.WeatherFog24, L.T("Fog"), 0, 3, "graphics_fog", picture, snapToOne: true);
              Body.Children.Add(picture);
 +            // Where they went, while they are hidden: the in-game menu's grading, which is live there.
 +            _pictureGradedNote = Text(L.T("Native+ with HDR on: brightness, contrast, saturation and bloom are graded in the in-game menu (Insert or L3 + R3), live"), "Faint");
@@ -833,9 +908,9 @@ index 2a4219a..ea2af8c 100644
  
              Group(L.T("Menus"));
              _ui4k = ToggleRow(SymbolRegular.ZoomIn24, L.T("4K menus"),
-@@ -233,6 +243,15 @@ namespace BloodborneLauncher.Views
-             double step = 0.05, double fallback = 1.0) =>
-             SliderRow(icon, title, null, min, max, step, () => ParseDouble(Ini.Get(key, Fmt(fallback)), fallback), v => Ini.Set(key, Fmt(v)), into: into);
+@@ -241,6 +251,15 @@ namespace BloodborneLauncher.Views
+             double step = 0.05, double fallback = 1.0, bool snapToOne = false) =>
+             SliderRow(icon, title, null, min, max, step, () => ParseDouble(Ini.Get(key, Fmt(fallback)), fallback), v => Ini.Set(key, Fmt(snapToOne ? Looks.SnapToOne(v) : v)), into: into);
  
 +        /// <summary>A Picture slider the Native+ chain replaces while it grades (hdr_grading): kept in
 +        /// _pictureGradedRows, so UpdatePicture hides it and the note says where it is.</summary>
@@ -849,7 +924,7 @@ index 2a4219a..ea2af8c 100644
          private static bool DlssFrameGenGpu() =>
              Hardware.Detect() is { Rtx: true } hardware &&
              System.Text.RegularExpressions.Regex.IsMatch(hardware.Gpu, @"RTX\s*(PRO\s*)?[45]0\d\d", System.Text.RegularExpressions.RegexOptions.IgnoreCase);
-@@ -248,7 +267,26 @@ namespace BloodborneLauncher.Views
+@@ -256,7 +275,26 @@ namespace BloodborneLauncher.Views
              _ => SymbolRegular.Color24,
          };
  
@@ -875,7 +950,7 @@ index 2a4219a..ea2af8c 100644
 +                _pictureGradedNote.IsVisible = grades;
 +        }
  
-         private static bool DlssFound() => Paths.DlssRuntime != null;
+         private void UpdateGlowSize() => _glowSizeCard.IsEnabled = Ini.Get("graphics_point_fog_falloff", "0") == "1";
  
 diff --git a/launcher/windows/LanternLauncher/Views/LauncherPage.cs b/launcher/windows/LanternLauncher/Views/LauncherPage.cs
 index 96777af..a5270ad 100644
