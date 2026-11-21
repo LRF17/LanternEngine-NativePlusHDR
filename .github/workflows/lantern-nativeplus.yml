@@ -33,7 +33,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           repository: Awakenchan/LanternEngine
-          ref: 573f83fd366d70bf26ce788edb9775a1b863676a
+          ref: 76f11563af73683a137c33f104a4c931be9249f6
           path: upstream-lantern
           persist-credentials: false
       - uses: actions/checkout@v4
@@ -85,7 +85,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           repository: Awakenchan/LanternEngine
-          ref: 573f83fd366d70bf26ce788edb9775a1b863676a
+          ref: 76f11563af73683a137c33f104a4c931be9249f6
           path: upstream-lantern
           persist-credentials: false
       - uses: actions/setup-python@v5

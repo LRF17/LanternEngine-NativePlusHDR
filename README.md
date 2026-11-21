@@ -192,8 +192,8 @@ Preset **Off** shows the game's own SDR look in HDR, as a reference.
 
 - Versions follow Lantern's: **0.9.38.1** is this fork's first release on Lantern 0.9.38,
   **0.9.38.2**, **0.9.38.3** and **0.9.38.4** the next ones; **0.9.40.1** the first on Lantern 0.9.40
-  (the 0.9.39.1 betas were on Lantern 0.9.39's betas), **0.9.42.1** on Lantern 0.9.42. Betas
-  (`0.9.42.1-beta.1`) come from the
+  (the 0.9.39.1 betas were on Lantern 0.9.39's betas), **0.9.42.1** on Lantern 0.9.42,
+  **0.9.43.1** on Lantern 0.9.43. Betas (`0.9.43.1-beta.1`) come from the
   `lantern-Native+HDR-beta` branch, releases from `lantern-Native+HDR`.
 - The launcher updates itself from this fork's releases. Since 0.9.40.1 it is Lantern's new native
   launcher, with the same Native+ settings (Display › HDR, Graphics › Picture).
@@ -221,15 +221,15 @@ Preset **Off** shows the game's own SDR look in HDR, as a reference.
 
 ## Build from source
 
-This fork carries reproducible patches over Lantern 0.9.42: `ports/lantern/nativeplus-engine.patch`
+This fork carries reproducible patches over Lantern 0.9.43: `ports/lantern/nativeplus-engine.patch`
 on Lantern's `engine/` and `nativeplus-launcher.patch` on its launcher (this fork's `launcher/`
 already holds it). The GitHub workflow (`.github/workflows/lantern-nativeplus.yml`) copies the
 pinned Lantern's `engine/`, applies the patches, builds the engine (Lantern 0.9.40 also needs Rust's
 `cargo`), its settings tests and the native launcher (`launcher/windows/LanternLauncher`, NativeAOT),
 checks the HDR shaders (against RenoDX's own code for the gamut bridge) and assembles the package
-with the official 0.9.42 runtime files (DLLs, models, shader catalogs). Pinned inputs:
+with the official 0.9.43 runtime files (DLLs, models, shader catalogs). Pinned inputs:
 
-- LanternEngine `573f83fd366d70bf26ce788edb9775a1b863676a` (0.9.42).
+- LanternEngine `76f11563af73683a137c33f104a4c931be9249f6` (0.9.43).
 - RenoDX `b6b32f47789ff9d0e640a0e0db6c9421b5397f34` (shader checks, and the source of the GLSL
   PsychoV-30).
 
